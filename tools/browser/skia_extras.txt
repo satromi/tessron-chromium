@@ -1,0 +1,7 @@
+# Skia's own ports the Skia test program uses, compiled with the command gn
+# gives a port of the same target (tools/browser/translate.py --extras-file)
+//third_party/skia/src/ports/SkFontMgr_custom_embedded.cpp=third_party/skia/src/ports/SkFontMgr_custom.cpp
+//third_party/skia/src/ports/SkMemory_malloc.cpp=third_party/skia/src/ports/SkFontMgr_custom.cpp
+//third_party/skia/src/ports/SkDiscardableMemory_none.cpp=third_party/skia/src/ports/SkFontMgr_custom.cpp
+//third_party/skia/src/utils/SkEventTracer.cpp=third_party/skia/src/ports/SkFontMgr_custom.cpp
+application/browser/port/skia/skia_tessronos.cc=third_party/skia/src/ports/SkFontMgr_custom.cpp

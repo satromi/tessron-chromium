@@ -1,0 +1,18 @@
+# Sources of the engine the TessronOS build leaves out (tools/browser/translate.py):
+# a path fragment per line. Most are replaced by the port's own
+# (application/browser/port), the rest serve what a process on TessronOS
+# does not have.
+
+# V8's operating system layer: application/browser/port/v8/platform-tessronos.cc
+v8/src/base/platform/platform-posix.cc
+v8/src/base/platform/platform-linux.cc
+v8/src/base/platform/platform-posix-time.cc
+v8/src/base/debug/stack_trace_posix.cc
+
+# Tests, benchmarks and fuzzers of the libraries
+_test.cc
+_unittest.cc
+_benchmark.cc
+_fuzzer.cc
+/test/
+/tests/

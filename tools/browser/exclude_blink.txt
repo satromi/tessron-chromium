@@ -1,0 +1,81 @@
+# What of Blink's dependency closure the TessronOS build leaves out
+# (tools/browser/translate.py): the GPU and its software stand-ins, the
+# media codecs and real-time communication, machine learning, devices the
+# system has not, and the windowing of desktop Linux. What the renderer
+# still reaches of them is answered by the port.
+third_party/swiftshader/
+third_party/dawn/
+third_party/angle/
+third_party/xnnpack/
+third_party/tflite/
+third_party/webrtc/
+third_party/ffmpeg/
+third_party/libvpx/
+third_party/libaom/
+third_party/opus/
+third_party/openh264/
+third_party/libzip/
+device/bluetooth/
+device/fido/
+device/gamepad/
+ui/ozone/
+ui/gl/
+gpu/command_buffer/service/
+gpu/vulkan/
+media/gpu/
+media/mojo/clients/
+media/mojo/common/
+media/mojo/services/
+# The network stack is built: the port fetches through it on a thread of
+# its own (application/browser/port/net). The parts that ask the system
+# are the port's: the TCP socket over nonblocking sockets polled by that
+# thread, the lookup of names, the interfaces and the resolver's settings.
+# Of the rest, WebSockets' server side and the authentication of
+# Kerberos are left out.
+net/socket/tcp_socket_posix.cc
+net/dns/host_resolver_system_task.cc
+net/dns/loopback_only.cc
+net/base/network_interfaces_linux.cc
+net/dns/address_sorter_posix.cc
+net/dns/dns_config_service_linux.cc
+net/dns/dns_config_service_posix.cc
+net/dns/dns_reloader.cc
+net/dns/public/resolv_reader.cc
+net/dns/public/scoped_res_state.cc
+net/base/address_tracker_linux.cc
+net/base/network_change_notifier_linux.cc
+net/base/network_change_notifier_passive.cc
+net/cert/internal/trust_store_chrome.cc
+net/socket/udp_socket_posix.cc
+net/server/
+# malloc stays newlib's (lib/libcxxrt): PartitionAlloc's replacement of
+# the C allocator is not built
+partition_alloc/shim/allocator_shim
+# Skia's parts that read XML (the Android font lists, SVG), as in
+# exclude_skia.txt; the desktop's services of Linux (D-Bus, ALSA,
+# PulseAudio)
+src/ports/SkFontMgr_android
+src/xml/
+dbus/
+media/audio/alsa/
+media/audio/pulse/
+media/audio/linux/
+# Crash reports, capture devices, machine learning, language detection,
+# the databases of the modules:
+# nothing in core reaches them
+third_party/crashpad/
+third_party/tflite_support/
+third_party/pthreadpool/
+third_party/leveldatabase/
+third_party/sqlite/
+third_party/cld_3/
+media/capture/
+components/leveldb_proto/
+components/language_detection/
+components/translate/core/language_detection/
+components/optimization_guide/
+
+# Skia's PNG codec in Rust: the names it gives the C++ side are defined on
+# libpng instead (application/browser/port/skia/png_tessronos.cc)
+third_party/skia/src/codec/SkPngRust
+third_party/skia/src/encode/SkPngRust

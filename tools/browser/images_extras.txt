@@ -1,0 +1,6 @@
+# Skia's libpng codec and the port's PNG under the Rust codec's names
+# (tools/browser/build.sh blink), compiled with the command of a codec of
+# the same target: SRC=REF
+//third_party/skia/src/codec/SkPngCodec.cpp=third_party/skia/src/codec/SkJpegCodec.cpp
+//third_party/skia/src/encode/SkPngEncoderImpl.cpp=third_party/skia/src/codec/SkJpegCodec.cpp
+application/browser/port/skia/png_tessronos.cc=third_party/skia/src/codec/SkJpegCodec.cpp

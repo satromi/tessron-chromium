@@ -1,0 +1,41 @@
+--- a/third_party/blink/renderer/core/loader/cookie_jar.cc	2026-09-29 16:07:33.382545870 +0900
++++ b/third_party/blink/renderer/core/loader/cookie_jar.cc	2026-09-29 16:07:33.382582602 +0900
+@@ -32,6 +32,13 @@
+ #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
+ #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+ 
++// The cookies of the process (application/browser/br_http.cc): there is
++// no network service to keep them, the application's fetches send and
++// take them, and document.cookie reads and writes the same.
++std::string br_cookie_get(const std::string& url, bool for_script);
++void br_cookie_set(const std::string& url, const std::string& line,
++                   bool from_script);
++
+ namespace blink {
+ namespace {
+ 
+@@ -82,6 +89,8 @@
+   if (cookie_url.IsEmpty()) {
+     return false;
+   }
++  br_cookie_set(cookie_url.GetString().Utf8(), value.Utf8(), true);
++  return true;
+ 
+   base::ElapsedTimer timer;
+   RequestRestrictedCookieManagerIfNeeded();
+@@ -124,6 +133,7 @@
+   KURL cookie_url = document_->CookieURL();
+   if (cookie_url.IsEmpty())
+     return String();
++  return String::FromUtf8(br_cookie_get(cookie_url.GetString().Utf8(), true));
+ 
+   base::ElapsedTimer timer;
+ 
+@@ -225,6 +235,7 @@
+   KURL cookie_url = document_->CookieURL();
+   if (cookie_url.IsEmpty())
+     return false;
++  return true;
+ 
+   base::ElapsedTimer timer;
+   RequestRestrictedCookieManagerIfNeeded();

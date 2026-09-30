@@ -1,0 +1,43 @@
+# Flags added for some sources of the engine (tools/browser/translate.py):
+# a path fragment, then the flags.
+
+# NEON vectors of one lane width passed where another is taken: accepted by
+# the compiler the sources are written for, an error for gcc without this.
+v8/src/objects/simd.cc -flax-vector-conversions
+
+# The test programs speak to the system through its own headers. The
+# system's config.h is named by its path (TS_CONFIG_H), ahead of the
+# engine's own files of that name
+tests/uprog/ -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+application/browser/br_ -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+application/browser/port/net/br_store -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+application/browser/port/media/br_snd -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+
+# BoringSSL in C only: its assembly is not built
+third_party/boringssl/ -DOPENSSL_NO_ASM
+
+# strerror_r: newlib declares the GNU form (it returns the text) where
+# _GNU_SOURCE is set, as glibc does; these take the form glibc's name
+# selects.
+base/posix/safe_strerror.cc -D__GLIBC__=2
+partition_alloc_base/posix/safe_strerror.cc -D__GLIBC__=2
+
+# The zone fields glibc's struct tm has, for a struct these sources fill
+# and pass to timegm themselves.
+base/time/time_exploded_posix.cc -D__TM_GMTOFF=tm_gmtoff -D__TM_ZONE=tm_zone
+
+# Numbers that newlib's headers do not have, for the sources that name
+# them: the error of too many users, and eventfd2's system call (which
+# fails with ENOSYS like every call the port does not answer)
+net/base/net_errors_posix.cc -DEUSERS=87
+mojo/core/channel_linux.cc -D__NR_eventfd2=19
+
+# Skia's libpng codec, built for the engine in place of its Rust one
+# (application/browser/port/skia/png_tessronos.cc): libpng's headers
+skia/src/codec/SkPngCodec.cpp -I../../third_party/libpng
+skia/src/encode/SkPngEncoderImpl.cpp -I../../third_party/libpng
+
+# libyuv's NEON rows with the dot product and matrix multiply
+# instructions: they are called only where the processor says it has them
+libyuv/source/row_neon64.cc -march=armv8.2-a+dotprod+i8mm
+libyuv/source/compare_neon64.cc -march=armv8.2-a+dotprod+i8mm

@@ -1,0 +1,30 @@
+# ビルドの生成物(翻訳した目的ファイルは WSL の ~/tessronos-obj に置く)
+*.o
+*.a
+*.d
+*.so
+*.elf
+*.img
+*.map
+*.lst
+*.bin
+*.log
+*.fail
+*.stamp
+out/
+obj/
+
+# Python
+__pycache__/
+*.pyc
+
+# エディタ・OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
+.VSCodeCounter/
+
+# Claude Code の作業木
+.claude/

@@ -1,0 +1,2 @@
+# gn labels of the TLS layer of the accessory (application/browser/br_tls.cc)
+//third_party/boringssl:boringssl

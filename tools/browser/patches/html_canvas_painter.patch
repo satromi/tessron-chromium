@@ -1,0 +1,13 @@
+--- a/third_party/blink/renderer/core/paint/html_canvas_painter.cc	2026-09-29 21:31:23.211799750 +0900
++++ b/third_party/blink/renderer/core/paint/html_canvas_painter.cc	2026-09-29 21:31:23.229360013 +0900
+@@ -79,7 +79,9 @@
+     }
+     // We do not take the foreign layer code path when printing because it
+     // prevents painting canvas content as vector graphics.
+-    if (!paint_info.ShouldOmitCompositingInfo() && !canvas->IsPrinting()) {
++    // There is no compositor to take the layer: the canvas is painted into
++    // the page's own record, as when printing.
++    if (false) {
+       gfx::Rect pixel_snapped_rect = ToPixelSnappedRect(paint_rect);
+       layer->SetBounds(pixel_snapped_rect.size());
+       layer->SetIsDrawable(true);

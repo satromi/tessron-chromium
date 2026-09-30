@@ -1,0 +1,14 @@
+# gn labels of the Skia test program (tests/uprog/skiaprog.cc): Skia's CPU
+# raster and effects, its colour management, FreeType and what FreeType reads
+//skia:skia_core_and_effects
+//skia:skia_opts
+//skia:skcms
+//skia:skcms_TransformBaseline_and_public
+//third_party/freetype:freetype
+//third_party/libpng:libpng
+//third_party/zlib:zlib
+//third_party/zlib:zlib_adler32_simd
+//third_party/zlib:zlib_arm_crc32
+//third_party/zlib:zlib_data_chunk_simd
+//third_party/zlib:zlib_slide_hash_simd
+//skia:skia

@@ -1,0 +1,12 @@
+--- a/third_party/blink/renderer/core/html/media/html_media_element.cc	2026-09-29 19:19:35.211855574 +0900
++++ b/third_party/blink/renderer/core/html/media/html_media_element.cc	2026-09-29 19:19:35.234068153 +0900
+@@ -4691,6 +4691,9 @@
+     UseCounterMuteScope scope(*this);
+     media_controls_ =
+         CoreInitializer::GetInstance().CreateMediaControls(*this, shadow_root);
++    // No controls are made when the modules' are not built
++    if (!media_controls_)
++      return;
+ 
+     // The media controls should be inserted after the text track container,
+     // so that they are rendered in front of captions and subtitles. This check

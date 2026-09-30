@@ -1,0 +1,75 @@
+# gn args of the TessronOS build of the engine (design 17.19): Chromium's
+# renderer, V8 and Skia for aarch64, of which only the compile commands
+# and the generated sources are used. The commands are compiled again
+# with the TessronOS toolchain by tools/browser/translate.py.
+
+target_cpu = "arm64"
+is_debug = false
+is_clang = false
+is_official_build = false
+use_sysroot = false
+symbol_level = 0
+treat_warnings_as_errors = false
+enable_nacl = false
+use_v8_context_snapshot = false
+v8_use_external_startup_data = false
+
+# No executable memory for a process: V8 runs --jitless. The large
+# reservations of the pointer compression cage and the sandbox are not
+# what fails here (ts_map_mem reserves without pages), but they are left
+# out to keep the memory layer of the port small.
+v8_enable_pointer_compression = false
+v8_enable_pointer_compression_shared_cage = false
+v8_enable_sandbox = false
+v8_enable_external_code_space = false
+v8_enable_temporal_support = false
+v8_enable_webassembly = true
+
+# No pointer authentication or branch targets: the processors TessronOS runs
+# on (Cortex-A76 in QEMU, the Cortex-A76 of the Raspberry Pi 5) have none.
+v8_control_flow_integrity = false
+arm_control_flow_integrity = "none"
+
+# ICU's data is linked into the program: the process has no file of it.
+icu_use_data_file = false
+
+use_partition_alloc_as_malloc = false
+enable_backup_ref_ptr_support = false
+
+use_dawn = false
+skia_use_dawn = false
+enable_vulkan = false
+angle_enable_vulkan = false
+use_glib = false
+use_gio = false
+use_xkbcommon = false
+use_ozone = true
+ozone_platform_x11 = true
+use_x11 = true
+use_nss_certs = false
+use_cups = false
+dawn_enable_vulkan = false
+dawn_enable_d3d12 = false
+dawn_enable_metal = false
+dawn_enable_desktop_gl = false
+dawn_enable_opengles = false
+dawn_enable_null = false
+use_gtk = false
+dawn_use_swiftshader = false
+dcheck_always_on = false
+enable_rust = true
+angle_use_wayland = false
+use_qt = false
+use_vaapi = false
+use_v4l2_codec = false
+use_custom_libcxx = false
+use_custom_libcxx_for_host = false
+enable_av1_decoder = false
+use_pangocairo = false
+use_udev = false
+use_dbus = true
+use_system_minigbm = false
+use_llvm_libatomic = false
+use_lld = true
+lld_path = "//third_party/llvm-build/Release+Asserts/bin"
+cppgc_enable_object_section_gcinfo = false

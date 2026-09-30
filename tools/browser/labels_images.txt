@@ -1,0 +1,3 @@
+# gn labels of the image codecs the Blink program links in place of the
+# Rust ones of the engine (tools/browser/build.sh blink, design 17.19)
+//third_party/libpng:libpng_sources

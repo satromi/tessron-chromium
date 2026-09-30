@@ -1,0 +1,66 @@
+--- a/third_party/skia/src/codec/SkPngCodec.cpp	2026-09-29 17:20:45.249380092 +0900
++++ b/third_party/skia/src/codec/SkPngCodec.cpp	2026-09-29 17:20:45.249523192 +0900
+@@ -10,6 +10,7 @@
+ #include "include/codec/SkEncodedOrigin.h"
+ #include "include/codec/SkPngChunkReader.h"
+ #include "include/codec/SkPngDecoder.h"
++#include "include/codec/SkCodecAnimation.h"
+ #include "include/core/SkColorSpace.h"
+ #include "include/core/SkData.h"
+ #include "include/core/SkImageInfo.h"
+@@ -390,6 +391,27 @@
+ }
+ 
+ class SkPngNormalDecoder : public SkPngCodec {
++    // The one frame of a still image described, as the decoders that
++    // read animations describe theirs: the image decoder of the engine
++    // takes its frame's place, timing and blending from here.
++public:
++    bool onGetFrameInfo(int index, FrameInfo* info) const override {
++        if (index != 0) {
++            return false;
++        }
++        if (info) {
++            info->fRequiredFrame = SkCodec::kNoFrame;
++            info->fDuration = 0;
++            info->fFullyReceived = true;
++            info->fAlphaType = this->getInfo().alphaType();
++            info->fHasAlphaWithinBounds = info->fAlphaType != kOpaque_SkAlphaType;
++            info->fDisposalMethod = SkCodecAnimation::DisposalMethod::kKeep;
++            info->fBlend = SkCodecAnimation::Blend::kSrcOver;
++            info->fFrameRect = SkIRect::MakeSize(this->dimensions());
++        }
++        return true;
++    }
++
+ public:
+     SkPngNormalDecoder(SkEncodedInfo&& info,
+                        std::unique_ptr<SkStream> stream,
+@@ -515,6 +537,27 @@
+ };
+ 
+ class SkPngInterlacedDecoder : public SkPngCodec {
++    // The one frame of a still image described, as the decoders that
++    // read animations describe theirs: the image decoder of the engine
++    // takes its frame's place, timing and blending from here.
++public:
++    bool onGetFrameInfo(int index, FrameInfo* info) const override {
++        if (index != 0) {
++            return false;
++        }
++        if (info) {
++            info->fRequiredFrame = SkCodec::kNoFrame;
++            info->fDuration = 0;
++            info->fFullyReceived = true;
++            info->fAlphaType = this->getInfo().alphaType();
++            info->fHasAlphaWithinBounds = info->fAlphaType != kOpaque_SkAlphaType;
++            info->fDisposalMethod = SkCodecAnimation::DisposalMethod::kKeep;
++            info->fBlend = SkCodecAnimation::Blend::kSrcOver;
++            info->fFrameRect = SkIRect::MakeSize(this->dimensions());
++        }
++        return true;
++    }
++
+ public:
+     SkPngInterlacedDecoder(SkEncodedInfo&& info,
+                            std::unique_ptr<SkStream> stream,

@@ -1,0 +1,4 @@
+# ninja targets that write headers the Skia test program's sources read (tools/browser/hostgen.sh)
+gpu/config:workaround_list
+base/allocator/partition_allocator/src/partition_alloc:buildflags
+skia:buildflags

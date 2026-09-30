@@ -1,0 +1,17 @@
+--- a/third_party/blink/renderer/core/paint/video_painter.cc	2026-09-29 19:19:12.646089567 +0900
++++ b/third_party/blink/renderer/core/paint/video_painter.cc	2026-09-29 19:19:12.689660125 +0900
+@@ -72,10 +72,10 @@
+                           snapped_replaced_rect);
+   }
+ 
+-  // Video frames are only painted in software for printing or capturing node
+-  // images via web APIs.
+-  bool force_software_video_paint =
+-      paint_info.ShouldOmitCompositingInfo() && !force_video_poster;
++  // Video frames are always painted in software: there is no compositor to
++  // take a video layer, and the paint that goes to the screen is the only
++  // paint there is.
++  bool force_software_video_paint = !force_video_poster;
+ 
+   bool paint_with_foreign_layer = paint_info.phase == PaintPhase::kForeground &&
+                                   !should_display_poster &&

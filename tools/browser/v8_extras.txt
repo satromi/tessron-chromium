@@ -1,0 +1,3 @@
+# The port's sources compiled with the command gn gives the engine's source they replace
+# (tools/browser/translate.py --extras-file): SRC=REF
+application/browser/port/v8/platform-tessronos.cc=v8/src/base/platform/platform-posix.cc

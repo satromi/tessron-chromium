@@ -1,0 +1,18 @@
+--- a/third_party/blink/renderer/core/paint/paint_layer_scrollable_area.cc	2026-09-30 18:16:10.290944401 +0900
++++ b/third_party/blink/renderer/core/paint/paint_layer_scrollable_area.cc	2026-09-30 18:16:10.291080941 +0900
+@@ -1735,9 +1735,14 @@
+     ComputeScrollbarExistenceOption option) const {
+   // Scrollbars may be hidden or provided by visual viewport or frame instead.
+   DCHECK(GetLayoutBox()->GetFrame()->GetSettings());
++  // The window the page is shown in has scroll bars of its own for the
++  // page as a whole: the setting takes away only the main frame's, and
++  // a box that scrolls inside the page keeps its bars.
+   if (VisualViewportSuppliesScrollbars() ||
+       !CanHaveOverflowScrollbars(*GetLayoutBox()) ||
+-      GetLayoutBox()->GetFrame()->GetSettings()->GetHideScrollbars() ||
++      (GetLayoutBox()->GetFrame()->GetSettings()->GetHideScrollbars() &&
++       GetLayoutBox()->IsLayoutView() &&
++       GetLayoutBox()->GetFrame()->IsMainFrame()) ||
+       GetLayoutBox()->IsFieldset() || GetLayoutBox()->IsFrameSet() ||
+       GetLayoutBox()->StyleRef().UsedScrollbarWidth() ==
+           EScrollbarWidth::kNone) {

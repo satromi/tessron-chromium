@@ -1,0 +1,18 @@
+# What of //skia:skia the Skia test program leaves out (tools/browser/build.sh
+# skiaprog): Chromium's own layer over Skia, which stands on //base, and the
+# ports for fonts through fontconfig, Android and the Rust font library.
+skia/ext/
+src/ports/SkFontConfigInterface
+src/ports/SkFontMgr_FontConfigInterface
+src/ports/SkFontMgr_android
+src/ports/SkFontMgr_fontations
+src/ports/SkFontScanner_fontations
+src/ports/SkTypeface_fontations
+src/ports/fontations/
+rust
+
+# Codecs and readers written in Rust, and XML
+src/codec/SkExif.cpp
+src/codec/SkPngRust
+src/encode/SkPngRust
+src/xml/

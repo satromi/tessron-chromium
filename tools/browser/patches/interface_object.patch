@@ -1,0 +1,23 @@
+--- a/third_party/blink/renderer/platform/bindings/v8_set_return_value.cc
++++ b/third_party/blink/renderer/platform/bindings/v8_set_return_value.cc
+@@ -53,6 +53,11 @@
+       ScriptState::ForRelevantRealm(isolate, creation_context);
+   if (!script_state->ContextIsValid())
+     return v8::Undefined(isolate);
++  // An interface whose bindings are not built has a type with nothing in
++  // it: the global's property reads as undefined, as in a browser without
++  // the feature, instead of calling through its empty template function.
++  if (!wrapper_type_info->install_interface_template_func)
++    return v8::Undefined(isolate);
+ 
+   return script_state->PerContextData()->ConstructorForType(wrapper_type_info);
+ }
+@@ -67,6 +72,8 @@
+       ScriptState::ForRelevantRealm(isolate, creation_context);
+   if (!script_state->ContextIsValid())
+     return v8::Undefined(isolate);
++  if (!wrapper_type_info->install_interface_template_func)
++    return v8::Undefined(isolate);
+ 
+   v8::Local<v8::Context> v8_context = script_state->GetContext();
+   v8::Context::Scope v8_context_scope(v8_context);
