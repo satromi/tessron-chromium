@@ -1,0 +1,11 @@
+# What of the GPU process's service (labels_gpu.txt) the browser leaves out
+# (tools/browser/build.sh gpusvc_lib): the parts on Chromium's windowing
+# platform (Ozone), which the process has not. ui/gl/init's platform part
+# is port/gpu/gl_init_tessronos.cc.
+gpu/command_buffer/service/shared_image/gl_ozone_image_representation.cc
+gpu/command_buffer/service/shared_image/ozone_image_backing.cc
+gpu/command_buffer/service/shared_image/ozone_image_backing_factory.cc
+gpu/command_buffer/service/shared_image/ozone_image_gl_textures_holder.cc
+ui/gl/init/gl_display_egl_util_ozone.cc
+ui/gl/init/gl_factory_ozone.cc
+ui/gl/init/gl_initializer_ozone.cc

@@ -1,0 +1,38 @@
+--- a/third_party/blink/renderer/modules/keyboard/keyboard_layout.cc
++++ b/third_party/blink/renderer/modules/keyboard/keyboard_layout.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "third_party/blink/renderer/modules/keyboard/keyboard_layout.h"
+ 
++#include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-blink.h"
++
+ #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
+ #include "third_party/blink/public/platform/platform.h"
+ #include "third_party/blink/public/platform/task_type.h"
+@@ -62,8 +64,24 @@
+ 
+   if (!is_request_pending_) {
+     is_request_pending_ = true;
+-    service_->GetKeyboardLayoutMap(
+-        BindOnce(&KeyboardLayout::GotKeyboardLayoutMap, WrapPersistent(this)));
++    // The map is the outermost main frame's, or a frame's whose permissions
++    // policy allows keyboard-map; any other frame is denied, after the round
++    // trip the service's answer would take. The service of this browser does
++    // not know the frame that asks, so the frame's policy is checked here.
++    LocalDOMWindow* window = DomWindow();
++    if (window->GetFrame() && !window->GetFrame()->IsOutermostMainFrame() &&
++        !window->IsFeatureEnabled(
++            network::mojom::PermissionsPolicyFeature::kKeyboardMap)) {
++      auto denied = mojom::blink::GetKeyboardLayoutMapResult::New();
++      denied->status = mojom::blink::GetKeyboardLayoutMapStatus::kDenied;
++      window->GetTaskRunner(TaskType::kMiscPlatformAPI)
++          ->PostTask(FROM_HERE,
++                     BindOnce(&KeyboardLayout::GotKeyboardLayoutMap,
++                              WrapPersistent(this), std::move(denied)));
++    } else {
++      service_->GetKeyboardLayoutMap(BindOnce(
++          &KeyboardLayout::GotKeyboardLayoutMap, WrapPersistent(this)));
++    }
+   }
+   return promise;
+ }

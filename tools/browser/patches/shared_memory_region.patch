@@ -1,0 +1,33 @@
+--- a/base/memory/platform_shared_memory_region_posix.cc
++++ b/base/memory/platform_shared_memory_region_posix.cc
+@@ -187,6 +187,30 @@
+   CHECK_NE(mode, Mode::kReadOnly) << "Creating a region in read-only mode will "
+                                      "lead to this region being non-modifiable";
+ 
++#if defined(__TESSRONOS__)
++  // There is no /dev/shm here to share memory through: the memory
++  // is an object of the process (memfd_create), mapped wherever it is asked
++  // for, and the read-only descriptor a duplicate marked read-only.
++  {
++    ScopedFD fd(memfd_create("shmem", 0));
++    if (!fd.is_valid() ||
++        HANDLE_EINTR(ftruncate(fd.get(), static_cast<off_t>(size))) != 0) {
++      DPLOG(ERROR) << "memfd_create";
++      return {};
++    }
++    ScopedFD readonly_fd;
++    if (mode == Mode::kWritable) {
++      readonly_fd.reset(HANDLE_EINTR(dup(fd.get())));
++      if (!readonly_fd.is_valid() ||
++          fcntl(readonly_fd.get(), F_SETFL, O_RDONLY) != 0) {
++        return {};
++      }
++    }
++    return PlatformSharedMemoryRegion({std::move(fd), std::move(readonly_fd)},
++                                      mode, size, UnguessableToken::Create());
++  }
++#endif
++
+   // This function theoretically can block on the disk, but realistically
+   // the temporary files we create will just go into the buffer cache
+   // and be deleted before they ever make it out to disk.

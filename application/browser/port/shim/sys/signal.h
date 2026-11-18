@@ -11,9 +11,10 @@
  *	sys/signal.h
  *	The C library's signals with the parts of POSIX a Linux program
  *	takes for granted: a sigaction that carries sa_sigaction and its
- *	flags, a siginfo_t with the address of a fault, sigaltstack. No
- *	signal is delivered to a process on TessronOS; handlers are kept and
- *	never called (application/browser/port/compat/ts_signal.c).
+ *	flags, a siginfo_t with the address of a fault, sigaltstack, and the
+ *	si_code values of Linux (a fault's SEGV_MAPERR is 1, which the C
+ *	library gives SI_USER). The only signal a process on TessronOS is
+ *	given is a fault of its own (application/browser/port/compat/ts_signal.c).
  */
 
 #ifndef __TS_SYS_SIGNAL_H__
@@ -24,6 +25,17 @@
 #include_next <sys/signal.h>
 #undef sigaction
 #undef siginfo_t
+
+#undef SI_USER
+#undef SI_QUEUE
+#undef SI_TIMER
+#undef SI_MESGQ
+#undef SI_ASYNCIO
+#define SI_USER		0
+#define SI_QUEUE	(-1)
+#define SI_TIMER	(-2)
+#define SI_MESGQ	(-3)
+#define SI_ASYNCIO	(-4)
 
 #ifdef __cplusplus
 extern "C" {

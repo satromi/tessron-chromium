@@ -27,7 +27,7 @@
 #define open64		open
 #define openat64	openat
 
-/* Sealing a memory file: none can be made (memfd_create fails) */
+/* Sealing a memory object: the seals are taken and not enforced */
 #ifndef F_ADD_SEALS
 #define F_ADD_SEALS	1033
 #define F_GET_SEALS	1034

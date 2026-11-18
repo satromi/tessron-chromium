@@ -1,0 +1,111 @@
+# gn args of the TessronOS build of the engine for x86-64 (design 14.3):
+# the same as args.gn (aarch64) but for the processor. Only the compile
+# commands and the generated sources are used; tools/browser/translate.py
+# compiles the commands again with the x86_64-elf toolchain (TS_ARCH=x86_64).
+
+target_cpu = "x64"
+
+# The host is x86-64 as well, so gn would build the host's tools and the
+# snapshot with the target's gcc toolchain, whose commands are only read
+# and never run here. They are built with Chromium's clang instead, as the
+# aarch64 build makes its mksnapshot with clang_x64_v8_arm64.
+host_toolchain = "//build/toolchain/linux:clang_x64"
+v8_snapshot_toolchain = "//build/toolchain/linux:clang_x64"
+is_debug = false
+is_clang = false
+is_official_build = false
+use_sysroot = false
+symbol_level = 0
+treat_warnings_as_errors = false
+enable_nacl = false
+use_v8_context_snapshot = false
+v8_use_external_startup_data = false
+
+# Pointer compression: the cage (4 GB of addresses, ts_map_mem reserves
+# them without pages) is shared by the isolates of the process. The
+# sandbox is left out to keep the memory layer of the port small.
+v8_enable_pointer_compression = true
+v8_enable_pointer_compression_shared_cage = true
+v8_enable_sandbox = false
+v8_enable_external_code_space = false
+# Temporal, as Chrome ships it: V8's builtins over temporal_rs and ICU4X,
+# whose Rust crates (temporal_capi and what it needs) tools/browser/rust.sh
+# builds and links with the rest of the Rust code
+v8_enable_temporal_support = true
+# V8 compiles JavaScript to machine code (Sparkplug, Maglev, Turbofan)
+# and WebAssembly too (Liftoff, Turbofan). The code space is memory
+# written and run by turns (TS_MEM_JIT, the port's OS::SetPermissions):
+# V8 asks for it writable and executable, and the kernel keeps each page
+# one or the other. WebAssembly's memory accesses are kept in bounds by
+# guard pages: the system hands the fault back to the process, and V8's
+# trap handler makes it the module's trap (port/compat/ts_signal.c).
+v8_enable_webassembly = true
+v8_enable_drumbrake = false
+v8_jitless = false
+v8_enable_sparkplug = true
+v8_enable_maglev = true
+v8_enable_turbofan = true
+
+# No control flow integrity in the code V8 makes (as on aarch64)
+v8_control_flow_integrity = false
+
+# ICU's data is linked into the program: the process has no file of it.
+icu_use_data_file = false
+
+use_partition_alloc_as_malloc = false
+enable_backup_ref_ptr_support = false
+
+use_dawn = false
+skia_use_dawn = false
+enable_vulkan = false
+angle_enable_vulkan = false
+use_glib = false
+use_gio = false
+use_xkbcommon = false
+use_ozone = true
+ozone_platform_x11 = true
+use_x11 = true
+use_nss_certs = false
+use_cups = false
+dawn_enable_vulkan = false
+dawn_enable_d3d12 = false
+dawn_enable_metal = false
+dawn_enable_desktop_gl = false
+dawn_enable_opengles = false
+dawn_enable_null = false
+use_gtk = false
+dawn_use_swiftshader = false
+dcheck_always_on = false
+enable_rust = true
+angle_use_wayland = false
+use_qt = false
+use_vaapi = false
+use_v4l2_codec = false
+use_custom_libcxx = false
+use_custom_libcxx_for_host = false
+# AV1 is decoded by dav1d (enable_dav1d_decoder, on for Blink), as in
+# Chrome on Linux: the flag of the decoder is on, so that every part
+# that reads it (canPlayType and isTypeSupported, MediaCapabilities,
+# the parsers of MP4 and WebM for Media Source Extensions, FFmpeg's
+# demuxer) takes AV1 the same way.
+enable_av1_decoder = true
+
+# The media elements play through Chromium's media pipeline: H.264 and AAC
+# (in MP4 and in Media Source Extensions) come with these, decoded by
+# Chromium's FFmpeg built with its codecs; VP8 and VP9 by libvpx, Opus by
+# libopus. HLS presentations are played by the media library's HLS demuxer
+# (port/media/hls_tessronos.cc gives it its data), whose MPEG-2 transport
+# stream segments are read by the parser Media Source Extensions also
+# take video/mp2t with, as in Chrome.
+proprietary_codecs = true
+ffmpeg_branding = "Chrome"
+enable_hls_demuxer = true
+enable_mse_mpeg2ts_stream_parser = true
+use_pangocairo = false
+use_udev = false
+use_dbus = true
+use_system_minigbm = false
+use_llvm_libatomic = false
+use_lld = true
+lld_path = "//third_party/llvm-build/Release+Asserts/bin"
+cppgc_enable_object_section_gcinfo = false

@@ -144,7 +144,7 @@ static void draw( SkCanvas *c, int w, int h, sk_sp<SkTypeface> face )
 		f.setEdging(SkFont::Edging::kAntiAlias);
 		c->drawString("TessronOS ブラウザ", 150, 220, f, p);
 		f.setSize(18);
-		c->drawString("Skia の CPU ラスタで描いた窓", 150, 260, f, p);
+		c->drawString("Skia の CPU ラスタで描いたウインドウ", 150, 260, f, p);
 	}
 	(void)h;
 }
@@ -179,7 +179,7 @@ int main()
 		printf("skiaprog: no window\n");
 		return 1;
 	}
-	kw = ob_opn_obj(&win, OB_OP_ALL);
+	kw = ob_opn_obj(&win, OB_OP_R | OB_OP_W | OB_OP_PROT);
 	gid = ( kw > 0 ) ? wm_obj_gid(kw) : E_ID;
 	memset(&pos, 0, sizeof(pos));
 	if ( gid < 0 || ob_rea_rec(kw, OB_WR_PLACE, 0, &pos, sizeof(pos), &asz) < E_OK ) {

@@ -1,0 +1,29 @@
+--- a/third_party/blink/renderer/core/html/forms/file_input_type.cc	2026-10-08 14:38:35.470589626 +0900
++++ b/third_party/blink/renderer/core/html/forms/file_input_type.cc	2026-10-08 14:38:35.488594820 +0900
+@@ -323,12 +323,16 @@
+             FilePathToString(file->get_native_file()->file_path.BaseName());
+       }
+       String relative_path;
+-#if BUILDFLAG(IS_ANDROID)
+       // Android content-URIs or virtual document paths do not use tree paths
+       // with separators like posix, so we build relative path using pre-filled
+-      // base_subdirs.
++      // base_subdirs. So does an embedder whose paths do not keep the names
++      // of the folders.
++#if BUILDFLAG(IS_ANDROID)
+       if (base_dir.IsContentUri() ||
+           !file->get_native_file()->base_subdirs.empty()) {
++#else
++      if (!file->get_native_file()->base_subdirs.empty()) {
++#endif
+         StringBuilder builder;
+         for (const auto& subdir : file->get_native_file()->base_subdirs) {
+           builder.Append(subdir);
+@@ -337,7 +341,6 @@
+         builder.Append(display_name);
+         relative_path = builder.ToString();
+       }
+-#endif
+       if (relative_path.empty()) {
+         DCHECK(
+             string_path.StartsWithIgnoringAsciiCase(FilePathToString(base_dir)))

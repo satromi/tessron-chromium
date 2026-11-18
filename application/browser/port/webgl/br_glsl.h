@@ -84,11 +84,17 @@ struct AttribStream {
   float const_val[4] = {0, 0, 0, 1};    // used when not enabled
 };
 
+// The samples of a multisampled target (4): where they are in a pixel,
+// from its top left corner, the rotated grid most hardware uses
+constexpr int kMaxSamples = 4;
+extern const float kSamplePos[kMaxSamples][2];
+
 struct DrawTarget {
-  unsigned char* color = nullptr;  // RGBA8, row 0 at top
+  unsigned char* color = nullptr;  // RGBA8, row 0 at top; samples() per pixel
   int w = 0;
   int h = 0;
-  float* depth = nullptr;          // optional, w*h
+  float* depth = nullptr;          // optional, w*h*samples
+  int samples = 1;                 // 1, or kMaxSamples (multisampled)
 };
 
 struct DrawParams {

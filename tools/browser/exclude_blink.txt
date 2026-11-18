@@ -1,19 +1,22 @@
 # What of Blink's dependency closure the TessronOS build leaves out
-# (tools/browser/translate.py): the GPU and its software stand-ins, the
-# media codecs and real-time communication, machine learning, devices the
-# system has not, and the windowing of desktop Linux. What the renderer
-# still reaches of them is answered by the port.
+# (tools/browser/translate.py): the GPU and its software stand-ins,
+# machine learning, devices the system has not, and the
+# windowing of desktop Linux. What the renderer still reaches of them is
+# answered by the port.
 third_party/swiftshader/
 third_party/dawn/
 third_party/angle/
 third_party/xnnpack/
 third_party/tflite/
-third_party/webrtc/
-third_party/ffmpeg/
-third_party/libvpx/
-third_party/libaom/
-third_party/opus/
-third_party/openh264/
+# Of WebRTC, the capture of an X11 desktop and the echo estimator of
+# machine learning (TFLite) and its model's description
+third_party/webrtc/modules/desktop_capture/linux/
+third_party/webrtc/modules/desktop_capture/mouse_cursor_monitor_linux.cc
+third_party/webrtc/modules/desktop_capture/screen_capturer_linux.cc
+third_party/webrtc/modules/desktop_capture/window_capturer_linux.cc
+third_party/webrtc/modules/audio_processing/aec3/neural_residual_echo_estimator/
+third_party/webrtc/api/audio/neural_residual_echo_estimator_creator.cc
+modules/audio_processing/aec3/neural_residual_echo_estimator/neural_residual_echo_estimator.pb.cc
 third_party/libzip/
 device/bluetooth/
 device/fido/
@@ -28,8 +31,9 @@ media/mojo/common/
 media/mojo/services/
 # The network stack is built: the port fetches through it on a thread of
 # its own (application/browser/port/net). The parts that ask the system
-# are the port's: the TCP socket over nonblocking sockets polled by that
-# thread, the lookup of names, the interfaces and the resolver's settings.
+# are the port's: the TCP and UDP sockets over nonblocking sockets polled
+# by that thread (QUIC runs over the UDP one), the lookup of names, the
+# interfaces and the resolver's settings.
 # Of the rest, WebSockets' server side and the authentication of
 # Kerberos are left out.
 net/socket/tcp_socket_posix.cc

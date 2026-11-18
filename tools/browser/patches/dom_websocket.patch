@@ -1,0 +1,24 @@
+--- a/third_party/blink/renderer/modules/websockets/dom_websocket.cc
++++ b/third_party/blink/renderer/modules/websockets/dom_websocket.cc
+@@ -78,6 +78,12 @@
+
+ namespace blink {
+
++// The channel runs over the network stack in this process: there is no
++// network service for the channel of Mojo pipes to connect to
++// (application/browser/port/blink/websocket_tessronos.cc).
++WebSocketChannel* BrCreateWebSocketChannel(ExecutionContext* context,
++                                           WebSocketChannelClient* client);
++
+ DOMWebSocket::EventQueue::EventQueue(EventTarget* target)
+     : state_(kActive), target_(target) {}
+
+@@ -253,7 +259,7 @@
+
+   DVLOG(1) << "WebSocket " << this << " connect() url=" << url;
+
+-  channel_ = CreateChannel(GetExecutionContext(), this);
++  channel_ = BrCreateWebSocketChannel(GetExecutionContext(), this);
+   UpdateStateIfNeeded();
+   // UpdateStateIfNeeded() can trigger closing the WebSocket.
+   // Return early to prevent starting the network connection.

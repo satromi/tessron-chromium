@@ -1,0 +1,77 @@
+--- a/third_party/blink/renderer/modules/storage_access/global_storage_access_handle.cc
++++ b/third_party/blink/renderer/modules/storage_access/global_storage_access_handle.cc
+@@ -4,10 +4,16 @@
+ 
+ #include "third_party/blink/renderer/modules/storage_access/global_storage_access_handle.h"
+ 
++#include "third_party/blink/renderer/modules/storage/dom_window_storage.h"
++#include "third_party/blink/renderer/platform/bindings/exception_state.h"
++
+ #include "third_party/blink/renderer/core/frame/navigator.h"
+ #include "third_party/blink/renderer/core/frame/settings.h"
+ #include "third_party/blink/renderer/modules/storage/storage_controller.h"
+ 
++// The origin of the storage access handle bound next (the embedder's)
++void BrStorageAccessFor(const std::string& origin);
++
+ namespace blink {
+ 
+ using PassKey = base::PassKey<GlobalStorageAccessHandle>;
+@@ -33,6 +39,10 @@
+ HeapMojoRemote<mojom::blink::StorageAccessHandle>&
+ GlobalStorageAccessHandle::GetRemote() {
+   if (!remote_) {
++    // The embedder's broker keeps no frame for a request: the handle is
++    // told whose first-party storage it gives right before it is bound
++    BrStorageAccessFor(
++        GetSupplementable()->GetSecurityOrigin()->ToString().Utf8());
+     mojo::PendingRemote<mojom::blink::StorageAccessHandle> remote;
+     GetSupplementable()
+         ->GetExecutionContext()
+@@ -46,6 +56,9 @@
+ }
+ 
+ StorageArea* GlobalStorageAccessHandle::GetSessionStorageArea() {
++  // The embedder keeps one storage of each kind for an origin, without
++  // namespaces or a storage controller: a first-party document's handle
++  // gives the window's own areas
+   if (!session_storage_area_) {
+     if (!GetSupplementable()->GetSecurityOrigin()->CanAccessSessionStorage()) {
+       return nullptr;
+@@ -53,17 +66,9 @@
+     if (!GetSupplementable()->GetFrame()) {
+       return nullptr;
+     }
+-    StorageNamespace* storage_namespace =
+-        StorageNamespace::From(GetSupplementable()->GetFrame()->GetPage());
+-    if (!storage_namespace) {
+-      return nullptr;
+-    }
+-    session_storage_area_ = StorageArea::Create(
+-        GetSupplementable(),
+-        storage_namespace->GetCachedArea(
+-            GetSupplementable(), {},
+-            StorageNamespace::StorageContext::kStorageAccessAPI),
+-        StorageArea::StorageType::kSessionStorage);
++    DummyExceptionStateForTesting exception_state;
++    session_storage_area_ =
++        DOMWindowStorage::sessionStorage(*GetSupplementable(), exception_state);
+   }
+   return session_storage_area_;
+ }
+@@ -82,13 +87,9 @@
+              ->GetLocalStorageEnabled()) {
+       return nullptr;
+     }
+-    scoped_refptr<CachedStorageArea> storage_area =
+-        StorageController::GetInstance()->GetLocalStorageArea(
+-            GetSupplementable(), {},
+-            StorageNamespace::StorageContext::kStorageAccessAPI);
++    DummyExceptionStateForTesting exception_state;
+     local_storage_area_ =
+-        StorageArea::Create(GetSupplementable(), std::move(storage_area),
+-                            StorageArea::StorageType::kLocalStorage);
++        DOMWindowStorage::localStorage(*GetSupplementable(), exception_state);
+   }
+   return local_storage_area_;
+ }

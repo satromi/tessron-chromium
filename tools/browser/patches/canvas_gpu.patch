@@ -1,0 +1,162 @@
+--- a/third_party/blink/renderer/platform/graphics/canvas_2d_bitmap_provider.cc	2026-10-06 00:03:52.899211247 +0900
++++ b/third_party/blink/renderer/platform/graphics/canvas_2d_bitmap_provider.cc	2026-10-06 00:03:52.899582984 +0900
+@@ -15,6 +15,7 @@
+ #include "base/functional/bind.h"
+ #include "base/memory/ptr_util.h"
+ #include "base/strings/stringprintf.h"
++#include "base/synchronization/lock.h"
+ #include "base/trace_event/memory_allocator_dump.h"
+ #include "base/trace_event/memory_dump_manager.h"
+ #include "base/trace_event/process_memory_dump.h"
+@@ -34,8 +35,62 @@
+ #include "third_party/skia/include/core/SkImageInfo.h"
+ #include "third_party/skia/include/core/SkSurface.h"
+ 
++#include <map>
++
+ namespace blink {
+ 
++// The embedder may keep the pixels of a canvas on a GPU. When these are set,
++// a provider asks for a surface there when it is made (the embedder says
++// which canvases it takes: those of its main thread, large enough), and a
++// provider that got one plays its records into it, writes pixels into it
++// and takes snapshots of it there; the snapshot is an image backed by a
++// texture of the embedder's, read back when its pixels are asked for. The
++// provider's own surface is then a pixel, kept for IsValid().
++PLATFORM_EXPORT void* (*g_canvas_2d_gpu_make)(int width,
++                                              int height,
++                                              SkColorType ct,
++                                              SkAlphaType at,
++                                              sk_sp<SkColorSpace> cs,
++                                              const SkSurfaceProps& props) =
++    nullptr;
++PLATFORM_EXPORT void (*g_canvas_2d_gpu_free)(void* surface) = nullptr;
++PLATFORM_EXPORT void (*g_canvas_2d_gpu_raster)(
++    void* surface,
++    cc::PaintRecord record,
++    cc::ImageProvider* images,
++    cc::PlaybackCallbacks::CustomDataRasterCallback callback) = nullptr;
++PLATFORM_EXPORT bool (*g_canvas_2d_gpu_write)(void* surface,
++                                              const SkImageInfo& info,
++                                              const void* pixels,
++                                              size_t row_bytes,
++                                              int x,
++                                              int y) = nullptr;
++PLATFORM_EXPORT cc::PaintImage (*g_canvas_2d_gpu_snapshot)(
++    void* surface,
++    cc::PaintImage::Id id,
++    const gfx::HDRMetadata& hdr) = nullptr;
++
++namespace {
++
++// The embedder's surfaces of the providers that have one
++base::Lock& GpuSurfacesLock() {
++  static base::Lock* lock = new base::Lock();
++  return *lock;
++}
++
++std::map<const Canvas2DBitmapProvider*, void*>& GpuSurfaces() {
++  static auto* surfaces = new std::map<const Canvas2DBitmapProvider*, void*>();
++  return *surfaces;
++}
++
++void* GpuSurfaceOf(const Canvas2DBitmapProvider* provider) {
++  base::AutoLock lock(GpuSurfacesLock());
++  auto it = GpuSurfaces().find(provider);
++  return it == GpuSurfaces().end() ? nullptr : it->second;
++}
++
++}  // namespace
++
+ Canvas2DBitmapProvider::Canvas2DBitmapProvider(
+     gfx::Size size,
+     viz::SharedImageFormat format,
+@@ -54,10 +109,31 @@
+   max_pinned_image_bytes_ = static_cast<size_t>(kMaxPinnedImageKB.Get()) * 1024;
+   recorder_ = std::make_unique<MemoryManagedPaintRecorder>(Size(), this);
+   CanvasMemoryDumpProvider::Instance()->RegisterClient(this);
++  if (g_canvas_2d_gpu_make) {
++    if (void* surface = g_canvas_2d_gpu_make(
++            size_.width(), size_.height(), viz::ToClosestSkColorType(format_),
++            kPremul_SkAlphaType, color_space_.ToSkColorSpace(),
++            GetSkSurfaceProps())) {
++      base::AutoLock lock(GpuSurfacesLock());
++      GpuSurfaces()[this] = surface;
++    }
++  }
+ }
+ 
+ Canvas2DBitmapProvider::~Canvas2DBitmapProvider() {
+   CanvasMemoryDumpProvider::Instance()->UnregisterClient(this);
++  void* gpu_surface = nullptr;
++  {
++    base::AutoLock lock(GpuSurfacesLock());
++    auto it = GpuSurfaces().find(this);
++    if (it != GpuSurfaces().end()) {
++      gpu_surface = it->second;
++      GpuSurfaces().erase(it);
++    }
++  }
++  if (gpu_surface) {
++    g_canvas_2d_gpu_free(gpu_surface);
++  }
+   if (context_provider_wrapper_) {
+     context_provider_wrapper_->RemoveObserver(this);
+   }
+@@ -175,6 +251,16 @@
+ 
+   cc::PaintImage paint_image;
+ 
++  if (void* gpu_surface = GpuSurfaceOf(this)) {
++    paint_image = g_canvas_2d_gpu_snapshot(
++        gpu_surface, snapshot_paint_image_id_, GetHdrMetadata());
++    if (!paint_image) {
++      return nullptr;
++    }
++    return UnacceleratedStaticBitmapImage::Create(std::move(paint_image),
++                                                  orientation);
++  }
++
+   auto sk_image = GetSkSurface()->makeImageSnapshot();
+   if (sk_image) {
+     auto last_snapshot_sk_image_id = snapshot_sk_image_id_;
+@@ -215,6 +301,9 @@
+       size_.width(), size_.height(), viz::ToClosestSkColorType(format_),
+       kPremul_SkAlphaType, color_space_.ToSkColorSpace());
+   const auto props = GetSkSurfaceProps();
++  if (GpuSurfaceOf(this)) {
++    return SkSurfaces::Raster(info.makeWH(1, 1), &props);
++  }
+   return SkSurfaces::Raster(info, &props);
+ }
+ 
+@@ -254,6 +343,17 @@
+ }
+ 
+ void Canvas2DBitmapProvider::RasterRecord(cc::PaintRecord last_recording) {
++  if (void* gpu_surface = GpuSurfaceOf(this)) {
++    cc::PlaybackCallbacks::CustomDataRasterCallback custom_callback;
++    if (delegate_) {
++      custom_callback = base::BindRepeating(
++          &Canvas2DBitmapProvider::ApplyAnimatedImageFrameIndexesForId,
++          base::Unretained(this));
++    }
++    g_canvas_2d_gpu_raster(gpu_surface, std::move(last_recording),
++                           GetOrCreateSWCanvasImageProvider(), custom_callback);
++    return;
++  }
+   if (!skia_canvas_) {
+     skia_canvas_ = std::make_unique<cc::SkiaPaintCanvas>(
+         GetSkSurface()->getCanvas(), GetOrCreateSWCanvasImageProvider());
+@@ -278,6 +378,11 @@
+   DCHECK(IsValid());
+   DCHECK(!Recorder().HasRecordedDrawOps());
+ 
++  if (void* gpu_surface = GpuSurfaceOf(this)) {
++    return g_canvas_2d_gpu_write(gpu_surface, orig_info, pixels, row_bytes, x,
++                                 y);
++  }
++
+   if (!skia_canvas_) {
+     skia_canvas_ = std::make_unique<cc::SkiaPaintCanvas>(
+         GetSkSurface()->getCanvas(), GetOrCreateSWCanvasImageProvider());

@@ -1,0 +1,18 @@
+--- a/third_party/blink/renderer/core/html/forms/file_chooser.h
++++ b/third_party/blink/renderer/core/html/forms/file_chooser.h
+@@ -90,6 +90,15 @@
+   bool OpenFileChooser(ChromeClientImpl& chrome_client_impl);
+   void EnumerateChosenDirectory();
+ 
++  // For an embedder that chooses the files itself, with no FileChooser of
++  // a browser to ask: the files chosen, or null when the choice was given
++  // up. A reference is held as OpenFileChooser() holds one, which closing
++  // the chooser lets go.
++  void DidChooseFilesForEmbedder(mojom::blink::FileChooserResultPtr result) {
++    AddRef();
++    DidChooseFiles(std::move(result));
++  }
++
+  private:
+   FileChooser(FileChooserClient*, const mojom::blink::FileChooserParams&);
+ 

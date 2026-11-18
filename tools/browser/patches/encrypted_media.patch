@@ -1,0 +1,24 @@
+--- a/third_party/blink/renderer/modules/encryptedmedia/encrypted_media_utils.cc
++++ b/third_party/blink/renderer/modules/encryptedmedia/encrypted_media_utils.cc
+@@ -14,6 +14,10 @@
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+ #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
+ 
++// The frame's encrypted media client: the frame here is not a
++// WebLocalFrameImpl with a client of its own
++blink::WebEncryptedMediaClient* br_encrypted_media_client();
++
+ namespace blink {
+ 
+ namespace {
+@@ -142,9 +146,7 @@
+ WebEncryptedMediaClient*
+ EncryptedMediaUtils::GetEncryptedMediaClientFromLocalDOMWindow(
+     LocalDOMWindow* window) {
+-  WebLocalFrameImpl* web_frame =
+-      WebLocalFrameImpl::FromFrame(window->GetFrame());
+-  return web_frame->Client()->EncryptedMediaClient();
++  return br_encrypted_media_client();
+ }
+ 
+ // static

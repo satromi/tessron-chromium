@@ -1,0 +1,45 @@
+--- a/third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.cc
++++ b/third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.cc
+@@ -1023,11 +1023,10 @@
+   }
+ 
+   webrtc::PeerConnectionDependencies dependencies(observer);
+-  // |web_frame| may be null in tests, e.g. if
+-  // RTCPeerConnectionHandler::InitializeForTest() is used.
+-  if (web_frame) {
+-    dependencies.allocator = CreatePortAllocator(web_frame);
+-  }
++  // |web_frame| is null where the embedder runs Blink's frames without the
++  // WebLocalFrame layer: the port allocator is the network service's
++  // sockets all the same.
++  dependencies.allocator = CreatePortAllocator(web_frame);
+   dependencies.async_dns_resolver_factory = CreateAsyncDnsResolverFactory();
+   dependencies.lna_permission_factory =
+       std::make_unique<LocalNetworkAccessPermissionFactory>(this);
+@@ -1045,7 +1044,6 @@
+ std::unique_ptr<webrtc::PortAllocator>
+ PeerConnectionDependencyFactory::CreatePortAllocator(
+     blink::WebLocalFrame* web_frame) {
+-  DCHECK(web_frame);
+   EnsureInitialized();
+ 
+   // Copy the flag from Preference associated with this WebLocalFrame.
+@@ -1205,7 +1203,7 @@
+ }
+ 
+ void PeerConnectionDependencyFactory::DeleteIpcNetworkManager(
+-    std::unique_ptr<IpcNetworkManager> network_manager,
++    std::unique_ptr<webrtc::NetworkManager> network_manager,
+     base::WaitableEvent* event) {
+   DCHECK(GetChromeNetworkThread().task_runner()->BelongsToCurrentThread());
+   network_manager = nullptr;
+@@ -1217,7 +1215,8 @@
+     PostCrossThreadTask(
+         *GetWebRtcNetworkTaskRunner(), FROM_HERE,
+         CrossThreadBindOnce(&IpcNetworkManager::ContextDestroyed,
+-                            CrossThreadUnretained(network_manager_.get())));
++                            CrossThreadUnretained(static_cast<IpcNetworkManager*>(
++                                network_manager_.get()))));
+   }
+ }
+ 

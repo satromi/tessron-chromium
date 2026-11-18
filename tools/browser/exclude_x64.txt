@@ -1,0 +1,2 @@
+# Sources the x86-64 build (TS_ARCH=x86_64) leaves out besides exclude.txt
+# (tools/browser/translate.py): a path fragment per line.

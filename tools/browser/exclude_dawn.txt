@@ -1,0 +1,4 @@
+# What of Dawn and Tint (labels_dawn.txt) the browser leaves out (tools/browser/
+# build.sh, design 14.6.5): Tint's terminal on termios, which the process has
+# not (terminal_other.cc, without colours, is compiled in its place).
+third_party/dawn/src/tint/utils/system/terminal_posix.cc

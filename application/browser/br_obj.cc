@@ -12,13 +12,21 @@
  *	The page object ブラウザ opens (design 17.19): a real object made from
  *	the base in the template box, holding what the browser shows.
  *
- *	Its metadata keeps the state under "webBrowser" -- "url", the page's
- *	"title", and the "back" and "forward" histories -- and the window's
- *	place under "window" ("pos", "width" and "height" of the work area),
- *	as the desktop's own windows keep it. Record 0 is a TAD document
- *	with the page's title and address, so that the object says what it
- *	is when it is opened with the basic text editor. Both are written
- *	each time a page is shown, and the window's place when it closes.
+ *	The address is the text of record 0, a TAD document: its first line
+ *	that is an address ("://" in it, "about:" or "www." at its start,
+ *	letters of full width read as the narrow ones) is the page opened,
+ *	so an object whose text is written by hand, with the basic text
+ *	editor or as a URL object is, opens at what it says: it is the
+ *	object's home page. Going to other pages leaves it as it is; only
+ *	〈ホームページに設定〉 (br_obj_set_home) writes the address of the page
+ *	shown there, as the one paragraph, and the page's "title" under
+ *	"webBrowser" in the metadata. The window's place is kept under
+ *	"window" ("pos" from the top left of the screen it is on, "screen"
+ *	when that is not the main screen, "width" and "height" of the work
+ *	area), as the desktop's own windows keep it. An object of before, with no address
+ *	in its text, is opened at the "url" the metadata kept; the histories
+ *	("back", "forward") an object of before kept are not read, and are
+ *	taken out when the home page is set.
  *
  *	The metadata is read and written whole (ob_get_atr, ob_set_atr) with
  *	a small JSON tree that keeps every other member as it was, in its
@@ -30,6 +38,7 @@
 #include <tk/typedef.h>
 #include <tk/errno.h>
 #include <ts/uapp.h>
+#include <ts/obatr.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -313,17 +322,21 @@ TS_UUID uuid_of( const unsigned char id[16] )
 
 bool read_meta( const TS_UUID &u, Json *root )
 {
-	static char	buf[OB_ATR_MAX + 1];
-	SZ		asz = 0;
-	ID		k = ob_opn_obj(&u, OB_OP_ATRRD);
+	UB	*buf = NULL;
+	ID	k = ob_opn_obj(&u, OB_OP_ATRRD);
 
 	if ( k <= 0 ) return false;
-	ER er = ob_get_atr(k, (UB *)buf, OB_ATR_MAX, &asz);
+	INT n = ob_atr_read(k, 0, &buf);		/* the metadata whole */
 	ob_cls_obj(k);
-	if ( er < E_OK || asz <= 0 ) return false;
-	Parser ps = { buf, buf + asz };
+	if ( n <= 0 ) {
+		free(buf);
+		return false;
+	}
+	Parser ps = { (const char *)buf, (const char *)buf + n };
 	*root = Json();
-	return ps.value(*root) && root->kind == Json::OBJ;
+	bool ok = ps.value(*root) && root->kind == Json::OBJ;
+	free(buf);
+	return ok;
 }
 
 bool write_meta( const TS_UUID &u, const Json &root )
@@ -332,7 +345,7 @@ bool write_meta( const TS_UUID &u, const Json &root )
 
 	dump(s, root, 0);
 	s += "\n";
-	if ( s.size() > OB_ATR_MAX ) return false;
+	if ( s.size() > OB_META_LIMIT ) return false;
 	ID k = ob_opn_obj(&u, OB_OP_ATRRD | OB_OP_ATRWR);
 	if ( k <= 0 ) return false;
 	ER er = ob_set_atr(k, (const UB *)s.data(), (SZ)s.size());
@@ -355,20 +368,133 @@ std::string xml( const std::string &s )
 	return o;
 }
 
-Json strings( const std::vector<std::string> &v )
+
+/* One character of U+0000..U+10FFFF as UTF-8 */
+void utf8_put( std::string &o, unsigned long c )
 {
-	Json a;
-	a.kind = Json::ARR;
-	for ( const auto &s : v ) a.items.push_back(Json::str(s));
-	return a;
+	if ( c < 0x80 ) {
+		o += (char)c;
+	} else if ( c < 0x800 ) {
+		o += (char)( 0xC0 | ( c >> 6 ) );
+		o += (char)( 0x80 | ( c & 0x3F ) );
+	} else if ( c < 0x10000 ) {
+		o += (char)( 0xE0 | ( c >> 12 ) );
+		o += (char)( 0x80 | ( ( c >> 6 ) & 0x3F ) );
+		o += (char)( 0x80 | ( c & 0x3F ) );
+	} else {
+		o += (char)( 0xF0 | ( c >> 18 ) );
+		o += (char)( 0x80 | ( ( c >> 12 ) & 0x3F ) );
+		o += (char)( 0x80 | ( ( c >> 6 ) & 0x3F ) );
+		o += (char)( 0x80 | ( c & 0x3F ) );
+	}
 }
 
-std::vector<std::string> strings_of( Json *a )
+/* The text of record 0: its tags taken out, a paragraph or a break a new line */
+std::string record_text( const TS_UUID &u )
 {
-	std::vector<std::string> v;
-	if ( a == nullptr || a->kind != Json::ARR ) return v;
-	for ( auto &i : a->items ) if ( i.kind == Json::STR ) v.push_back(i.text);
-	return v;
+	std::string	raw, t;
+	char		buf[4096];
+	ID		k = ob_opn_obj(&u, OB_OP_READ);
+
+	if ( k <= 0 ) return t;
+	for ( D off = 0; raw.size() < 65536; ) {
+		SZ asz = 0;
+		if ( ob_rea_rec(k, 0, off, buf, (SZ)sizeof(buf), &asz) < E_OK || asz <= 0 ) break;
+		raw.append(buf, (size_t)asz);
+		off += asz;
+		if ( asz < (SZ)sizeof(buf) ) break;
+	}
+	ob_cls_obj(k);
+	for ( size_t i = 0; i < raw.size(); ) {
+		if ( raw[i] == '<' ) {
+			size_t e = raw.find('>', i);
+			if ( e == std::string::npos ) break;
+			std::string tag = raw.substr(i + 1, e - i - 1);
+			if ( tag == "/p" || tag.compare(0, 2, "br") == 0 || tag == "p" ) t += '\n';
+			i = e + 1;
+		} else if ( raw[i] == '&' ) {
+			size_t e = raw.find(';', i);
+			std::string ent = ( e == std::string::npos ) ? "" : raw.substr(i + 1, e - i - 1);
+			if ( ent == "amp" ) t += '&';
+			else if ( ent == "lt" ) t += '<';
+			else if ( ent == "gt" ) t += '>';
+			else if ( ent == "quot" ) t += '"';
+			else if ( ent == "apos" ) t += '\'';
+			else if ( ent.size() > 1 && ent[0] == '#' ) {
+				unsigned long c = ( ent[1] == 'x' || ent[1] == 'X' ) ? strtoul(ent.c_str() + 2, nullptr, 16)
+										  : strtoul(ent.c_str() + 1, nullptr, 10);
+				if ( c > 0 && c <= 0x10FFFF ) utf8_put(t, c);
+			} else {
+				t += '&';
+				i++;
+				continue;
+			}
+			i = e + 1;
+		} else {
+			t += raw[i++];
+		}
+	}
+	return t;
+}
+
+/* A line with full-width letters read as the narrow ones, its spaces at either end taken off */
+std::string narrow_trim( const std::string &l )
+{
+	std::string o;
+
+	for ( size_t i = 0; i < l.size(); ) {
+		unsigned char a = (unsigned char)l[i];
+		if ( a == 0xEF && i + 2 < l.size() ) {
+			unsigned long c = ( ( a & 0x0FUL ) << 12 ) | ( ( (unsigned char)l[i + 1] & 0x3FUL ) << 6 )
+					| ( (unsigned char)l[i + 2] & 0x3FUL );
+			if ( c >= 0xFF01 && c <= 0xFF5E ) {
+				o += (char)( c - 0xFEE0 );
+				i += 3;
+				continue;
+			}
+		}
+		if ( a == 0xE3 && i + 2 < l.size() && (unsigned char)l[i + 1] == 0x80
+		  && (unsigned char)l[i + 2] == 0x80 ) {
+			o += ' ';			/* the ideographic space */
+			i += 3;
+			continue;
+		}
+		o += l[i++];
+	}
+	size_t b = o.find_first_not_of(" \t\r\n");
+	size_t e = o.find_last_not_of(" \t\r\n");
+	return ( b == std::string::npos ) ? std::string() : o.substr(b, e - b + 1);
+}
+
+/*
+ * The first line of the object's text that is an address, or "", and in
+ * 'trace' what a line "trace=<what>" asks to be traced (as the start-up
+ * line's, for the user to look at a site on the console; no other line
+ * of the start-up is taken from an object)
+ */
+std::string url_in_text( const TS_UUID &u, std::string *trace )
+{
+	std::string t = record_text(u);
+
+	for ( size_t i = 0; i <= t.size(); ) {
+		size_t e = t.find('\n', i);
+		if ( e == std::string::npos ) e = t.size();
+		std::string l = narrow_trim(t.substr(i, e - i));
+		if ( l.compare(0, 6, "trace=") == 0 && l.size() > 6 ) {
+			if ( !trace->empty() ) *trace += ",";
+			*trace += l.substr(6);
+		}
+		i = e + 1;
+	}
+	for ( size_t i = 0; i <= t.size(); ) {
+		size_t e = t.find('\n', i);
+		if ( e == std::string::npos ) e = t.size();
+		std::string l = narrow_trim(t.substr(i, e - i));
+		if ( l.find("://") != std::string::npos || l.compare(0, 6, "about:") == 0 ) return l;
+		if ( l.compare(0, 4, "www.") == 0 ) return "https://" + l;
+		i = e + 1;
+	}
+	return std::string();
 }
 
 }  // namespace
@@ -402,7 +528,10 @@ bool br_obj_open( const unsigned char id[16], BrObject *o )
 		if ( pos != nullptr && pos->kind == Json::OBJ ) {
 			o->x = (int)num_of(pos->member("x"), o->x);
 			o->y = (int)num_of(pos->member("y"), o->y);
+			o->kept = true;
 		}
+		Json *scr = w->member("screen");
+		if ( scr != nullptr && scr->kind == Json::STR ) o->screen = scr->text;
 		o->w = (int)num_of(w->member("width"), o->w);
 		o->h = (int)num_of(w->member("height"), o->h);
 	}
@@ -410,14 +539,15 @@ bool br_obj_open( const unsigned char id[16], BrObject *o )
 	if ( b != nullptr && b->kind == Json::OBJ ) {
 		Json *url = b->member("url");
 		if ( url != nullptr && url->kind == Json::STR ) o->url = url->text;
-		o->back = strings_of(b->member("back"));
-		o->fwd = strings_of(b->member("forward"));
 	}
+	o->trace.clear();
+	std::string t = url_in_text(u, &o->trace);
+	if ( !t.empty() ) o->url = t;
 	o->ok = true;
 	return true;
 }
 
-bool br_obj_save( const BrObject &o, const std::string &title )
+bool br_obj_set_home( const BrObject &o, const std::string &title )
 {
 	Json root;
 
@@ -425,21 +555,24 @@ bool br_obj_save( const BrObject &o, const std::string &title )
 	if ( !o.ok || !read_meta(u, &root) ) return false;
 	Json &b = root.set("webBrowser");
 	if ( b.kind != Json::OBJ ) b = Json::object();
-	b.set("url") = Json::str(o.url);
+	/* the address is the text's, and the histories of before are not kept */
+	for ( auto m = b.members.begin(); m != b.members.end(); ) {
+		if ( m->first == "url" || m->first == "back" || m->first == "forward" ) {
+			m = b.members.erase(m);
+		} else {
+			++m;
+		}
+	}
 	b.set("title") = Json::str(title);
-	b.set("back") = strings(o.back);
-	b.set("forward") = strings(o.fwd);
 	if ( !write_meta(u, root) ) return false;
 
-	/* record 0: the page as a document */
+	/* record 0: the address, as the one paragraph of a document */
 	std::string t = "<tad version=\"1.0\" encoding=\"UTF-8\" filename=\"" + xml(o.name) + "\">\n"
-			"<document>\n<p>" + xml(title.empty() ? o.url : title) + "</p>\n<p>"
-			+ xml(o.url) + "</p>\n</document>\n</tad>\n";
+			"<document>\n<p>" + xml(o.url) + "</p>\n</document>\n</tad>\n";
 	ID k = ob_opn_obj(&u, OB_OP_READ | OB_OP_WRITE);
 	if ( k <= 0 ) return false;
-	SZ asz = 0;
-	ER er = ob_wri_rec(k, 0, 0, t.data(), (SZ)t.size(), &asz);
-	if ( er >= E_OK ) er = ob_trn_rec(k, 0, (UD)t.size());
+	/* replaced in one change: a reader sees the old record or the new one */
+	ER er = ob_rpl_rec(k, 0, t.data(), (SZ)t.size());
 	ob_cls_obj(k);
 	return er >= E_OK;
 }
@@ -458,5 +591,7 @@ bool br_obj_save_window( const BrObject &o )
 	pos.set("y") = Json::num(o.y);
 	w.set("width") = Json::num(o.w);
 	w.set("height") = Json::num(o.h);
+	/* the main screen's place names none: one named before is made empty */
+	if ( !o.screen.empty() || w.member("screen") != nullptr ) w.set("screen") = Json::str(o.screen);
 	return write_meta(u, root);
 }

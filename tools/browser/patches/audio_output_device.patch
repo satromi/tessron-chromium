@@ -1,0 +1,19 @@
+--- a/third_party/blink/renderer/modules/audio_output_devices/html_media_element_audio_output_device.cc
++++ b/third_party/blink/renderer/modules/audio_output_devices/html_media_element_audio_output_device.cc
+@@ -144,9 +144,13 @@
+                   std::move(set_sink_id_completion_callback)))
+         .Run(status.value());
+   } else {
+-    resolver_->Reject(MakeGarbageCollected<DOMException>(
+-        DOMExceptionCode::kSecurityError,
+-        "Impossible to authorize device if there is no frame"));
++    // A frame of an embedder without the content layer: the one output there
++    // is, the default, is taken; any other is not found
++    std::optional<WebSetSinkIdError> error;
++    if (!sink_id_.empty() && sink_id_ != "default") {
++      error = WebSetSinkIdError::kNotFound;
++    }
++    std::move(set_sink_id_completion_callback).Run(error);
+   }
+ }
+ 

@@ -1,0 +1,13 @@
+--- a/third_party/pdfium/xfa/fde/cfde_texteditengine.cpp
++++ b/third_party/pdfium/xfa/fde/cfde_texteditengine.cpp
+@@ -880,8 +880,8 @@
+   length = std::min(length, text_length_ - start_idx);
+   AdjustGap(start_idx + length, 0);
+ 
+-  WideString ret(
+-      WideStringView(pdfium::span(content_).subspan(start_idx, length)));
++  WideString ret{
++      WideStringView(pdfium::span(content_).subspan(start_idx, length))};
+ 
+   if (add_operation == RecordOperation::kInsertRecord) {
+     AddOperationRecord(std::make_unique<DeleteOperation>(this, start_idx, ret));

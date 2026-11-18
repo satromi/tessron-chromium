@@ -17,9 +17,19 @@
 # objects go where translate.py puts them ($OBJ/$OUT); the log of a run is
 # $OBJ/blink_<stage>.log.
 #
+# TS_ARCH=x86_64 does the same for the x86-64 build ($CR/out/tessronos_x64,
+# ~/tessronos-obj-x64): the generated headers that are not made here are
+# copied from the aarch64 build ($CR/out/tessronos/gen), the bindings and
+# the mojom being the same for both.
+#
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 CR=${CR:-$HOME/cr6/src}
+if [ "${TS_ARCH:-aarch64}" = x86_64 ]; then
+	OUT=${OUT:-tessronos_x64}
+	OBJ=${OBJ:-$HOME/tessronos-obj-x64}
+	GENFROM=${GENFROM:-$CR/out/tessronos/gen}
+fi
 OUT=${OUT:-tessronos}
 OBJ=${OBJ:-$HOME/tessronos-obj}
 JOBS=${JOBS:-4}
@@ -46,8 +56,25 @@ labels)
 	;;
 gen)
 	grep -E 'buildflag|_flags$|:features$|build_config' "$LABELS" | sed 's#^//##' > "$OBJ/gen_blink.txt"
-	GENLISTS="$OBJ/gen_blink.txt" JOBS="$JOBS" bash "$HERE/hostgen.sh"
+	# x86-64: optimization_guide's features reach DevTools' inspector overlay,
+	# whose build needs esbuild, which the checkout does not have; its
+	# generated headers are the aarch64 build's, copied below
+	if [ "${TS_ARCH:-aarch64}" = x86_64 ]; then
+		sed -i '/^components\/optimization_guide\/core:features$/d' "$OBJ/gen_blink.txt"
+		# what the host's tools cannot be built for (the host's compiler is
+		# clang over the system's older C++ library) is the aarch64 build's,
+		# copied below
+		GENLISTS="$OBJ/gen_blink.txt" JOBS="$JOBS" HOSTGEN_NINJA_FLAGS="-k 0" \
+			bash "$HERE/hostgen.sh" || echo "blink: some generated sources are taken from $GENFROM"
+	else
+		GENLISTS="$OBJ/gen_blink.txt" JOBS="$JOBS" bash "$HERE/hostgen.sh"
+	fi
 	rsync -a --ignore-existing "$GENFROM/" "$CR/out/$OUT/gen/"
+	# Blink speaks to Dawn through the client of its wire (design 14.6.5),
+	# which the browser links, although the engine's graph is made without
+	# Dawn (args.gn): what is under USE_DAWN is wanted
+	sed -i 's/^#define BUILDFLAG_INTERNAL_USE_DAWN() (0)/#define BUILDFLAG_INTERNAL_USE_DAWN() (1)/' \
+		"$CR/out/$OUT/gen/ui/gl/buildflags.h"
 	;;
 sample)
 	translate --list | grep '\.o$' > "$OBJ/blink_all.objs"

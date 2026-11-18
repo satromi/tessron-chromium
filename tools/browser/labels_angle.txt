@@ -1,0 +1,17 @@
+//third_party/angle:libGLESv2_thin_static
+//third_party/angle:libANGLE_no_vulkan
+//third_party/angle:angle_common
+//third_party/angle:angle_common_shader_state
+//third_party/angle:angle_image_util
+//third_party/angle:angle_gpu_info_util
+//third_party/angle:angle_frame_capture_mock
+//third_party/angle:angle_program_version_id
+//third_party/angle:angle_version_info
+//third_party/angle:preprocessor
+//third_party/angle:translator
+//third_party/angle:xxhash
+//third_party/angle/src/libANGLE/renderer/gl:angle_gl_backend
+//third_party/angle/src/common/linux:angle_dma_buf
+//third_party/angle/src/libANGLE/renderer/wgpu:angle_wgpu_backend
+//ui/gl:gl
+//ui/gl:gl_enums

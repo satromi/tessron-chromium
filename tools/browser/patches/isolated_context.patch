@@ -1,0 +1,30 @@
+--- a/third_party/blink/renderer/core/frame/local_dom_window.cc
++++ b/third_party/blink/renderer/core/frame/local_dom_window.cc
+@@ -2684,7 +2684,15 @@
+   Supplementable<LocalDOMWindow>::Trace(visitor);
+ }
+
++// An embedder with no isolated web apps (TessronOS) lets the user give an
++// origin what an isolated web app has: an isolated context, which is
++// also cross-origin isolated. Asked of the window's origin.
++CORE_EXPORT bool (*g_isolated_context_hook)(const LocalDOMWindow&) = nullptr;
++
+ bool LocalDOMWindow::CrossOriginIsolatedCapability() const {
++  if (g_isolated_context_hook && g_isolated_context_hook(*this)) {
++    return true;
++  }
+   // When crossOriginIsolation is enabled by DocumentIsolationPolicy, it ignores
+   // the restriction placed on COI capability by the CrossOriginIsolated
+   // permission policy. This is because the permission policy is necessary for
+@@ -2703,7 +2711,10 @@
+ }
+
+ bool LocalDOMWindow::IsIsolatedContext() const {
+-  return Agent::IsIsolatedContext();
++  if (Agent::IsIsolatedContext()) {
++    return true;
++  }
++  return g_isolated_context_hook && g_isolated_context_hook(*this);
+ }
+
+ ukm::UkmRecorder* LocalDOMWindow::UkmRecorder() {

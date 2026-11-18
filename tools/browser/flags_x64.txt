@@ -1,0 +1,18 @@
+# Flags added for some sources in the x86-64 build (TS_ARCH=x86_64), besides
+# flags.txt (tools/browser/translate.py): a path fragment, then the flags.
+
+# V8's memory protection keys (x86-64 only): the pkey calls are weak and
+# absent, so no key is ever made; the retry for the main stack names
+# Linux's flag of a mapping that grows down, which newlib does not have
+v8/src/base/platform/memory-protection-key.cc -DPROT_GROWSDOWN=0x01000000
+
+# base's x86-64 paths name Linux's numbers newlib and the port's headers do
+# not have: the si_code of a signal the kernel sent, and rt_sigaction's
+# system call (which the port fails with ENOSYS, as every other it does
+# not answer); glibc's signal.h brings in the machine context, newlib's does not
+base/debug/stack_trace_posix.cc -DSI_KERNEL=0x80 -include sys/ucontext.h
+base/process/launch_posix.cc -DSYS_rt_sigaction=13
+
+# zstd's Huffman decoder calls its x86-64 assembly loops, whose source gn
+# does not put in the compile commands: the C loops instead
+third_party/zstd/ -DZSTD_DISABLE_ASM

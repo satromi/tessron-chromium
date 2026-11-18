@@ -1,0 +1,56 @@
+--- a/third_party/blink/renderer/platform/graphics/begin_frame_provider.cc	2026-10-10 13:48:20.990239048 +0900
++++ b/third_party/blink/renderer/platform/graphics/begin_frame_provider.cc	2026-10-10 13:48:21.053512018 +0900
+@@ -22,6 +22,13 @@
+ 
+ namespace blink {
+ 
++// An embedder with no compositor service (TessronOS) gives a worker's
++// animation frames itself: asked for one frame, it runs |frame| on |runner|
++// (the worker's thread) with the frame's arguments when the frame begins.
++PLATFORM_EXPORT void (*g_worker_begin_frame_hook)(
++    scoped_refptr<base::SingleThreadTaskRunner> runner,
++    base::OnceCallback<void(const viz::BeginFrameArgs&)> frame) = nullptr;
++
+ BeginFrameProvider::BeginFrameProvider(
+     const BeginFrameProviderParams& begin_frame_provider_params,
+     BeginFrameProviderClient* client,
+@@ -55,7 +62,7 @@
+ 
+ bool BeginFrameProvider::IsValidFrameProvider() {
+   if (!parent_frame_sink_id_.is_valid() || !frame_sink_id_.is_valid()) {
+-    return false;
++    return g_worker_begin_frame_hook != nullptr;
+   }
+ 
+   return true;
+@@ -96,6 +103,30 @@
+     return;
+   }
+ 
++  if ((!parent_frame_sink_id_.is_valid() || !frame_sink_id_.is_valid()) &&
++      g_worker_begin_frame_hook) {
++    // One frame asked of the embedder; another is asked when this one has
++    // begun and something wants the next.
++    needs_begin_frame_ = true;
++    g_worker_begin_frame_hook(
++        begin_frame_client_->GetCompositorTaskRunner(),
++        BindOnce(
++            [](WeakPersistent<BeginFrameProvider> provider,
++               const viz::BeginFrameArgs& args) {
++              if (!provider) {
++                return;
++              }
++              provider->needs_begin_frame_ = false;
++              if (!provider->requested_needs_begin_frame_) {
++                return;
++              }
++              provider->requested_needs_begin_frame_ = false;
++              provider->begin_frame_client_->BeginFrame(args);
++            },
++            WrapWeakPersistent(this)));
++    return;
++  }
++
+   CreateCompositorFrameSinkIfNeeded();
+ 
+   needs_begin_frame_ = true;

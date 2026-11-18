@@ -1,0 +1,16 @@
+--- a/third_party/blink/renderer/modules/cookie_store/global_cookie_store.cc
++++ b/third_party/blink/renderer/modules/cookie_store/global_cookie_store.cc
+@@ -45,10 +45,9 @@
+   CookieStore* GetCookieStore(T& scope) {
+     if (!cookie_store_) {
+       ExecutionContext* execution_context = scope.GetExecutionContext();
+-      if (&execution_context->GetBrowserInterfaceBroker() ==
+-          &GetEmptyBrowserInterfaceBroker()) {
+-        return nullptr;
+-      }
++      // The embedder answers the frames' interfaces through the empty
++      // broker (binders given to it), so a context with that broker is
++      // not detached.
+ 
+       HeapMojoRemote<network::mojom::blink::RestrictedCookieManager> backend(
+           execution_context);

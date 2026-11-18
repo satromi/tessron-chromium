@@ -1,0 +1,95 @@
+--- a/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.cc	2026-10-18 14:12:06.613703340 +0900
++++ b/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.cc	2026-10-18 14:12:06.618857352 +0900
+@@ -48,6 +48,7 @@
+ #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
+ #include "third_party/blink/renderer/platform/graphics/static_bitmap_image_transform.h"
+ #include "third_party/blink/renderer/platform/graphics/unaccelerated_static_bitmap_image.h"
++#include "third_party/skia/include/core/SkBitmap.h"
+ #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
+ #include "third_party/blink/renderer/platform/heap/thread_state.h"
+ #include "third_party/blink/renderer/platform/image-encoders/image_encoder_utils.h"
+@@ -65,6 +66,58 @@
+ #include "ui/gfx/geometry/skia_conversions.h"
+ 
+ namespace blink {
++
++// The frames of an OffscreenCanvas for its placeholder canvas, kept by the
++// placeholder's id (html_canvas_element.cc): put from the canvas's thread,
++// shown on the page's thread.
++void PortPlaceholderFramePut(DOMNodeId id, sk_sp<SkImage> image);
++void PortPlaceholderFrameShow(DOMNodeId id);
++
++// There is no compositor to take the canvas's resources (the shared images
++// of a GPU process, or the software compositor's), so the placeholder is
++// given what the context shows as pixels, at each frame: the drawing buffer
++// read back for WebGL (afresh each time: the snapshot WebGL keeps for a
++// canvas with no resource provider is made once and kept), and then taken
++// as composited, as a frame given to a compositor is, so that a drawing
++// buffer that is not preserved is cleared before the next frame's drawing;
++// the current texture's pixels for WebGPU; the context's image otherwise.
++// The page's thread is told, and paints it with the page.
++static bool PortPushSnapshot(OffscreenCanvas* canvas) {
++  CanvasRenderingContext* context = canvas->RenderingContext();
++  if (!context || canvas->Size().IsEmpty() || !canvas->HasPlaceholderCanvas()) {
++    return false;
++  }
++  scoped_refptr<StaticBitmapImage> image =
++      context->IsWebGL() ? context->GetRGBAUnacceleratedStaticBitmapImage(kBackBuffer)
++                         : context->GetImage();
++  if (!image) {
++    return false;
++  }
++  sk_sp<SkImage> sk = image->PaintImageForCurrentFrame().GetSwSkImage();
++  if (!sk) {
++    return false;
++  }
++  SkBitmap bitmap;
++  if (!bitmap.tryAllocPixels(sk->imageInfo().makeColorType(kN32_SkColorType)) ||
++      !sk->readPixels(bitmap.pixmap(), 0, 0)) {
++    return false;
++  }
++  bitmap.setImmutable();
++  const DOMNodeId id = canvas->PlaceholderCanvasId();
++  PortPlaceholderFramePut(id, bitmap.asImage());
++  if (context->IsWebGL()) {
++    context->MarkLayerComposited();
++  }
++  if (IsMainThread()) {
++    PortPlaceholderFrameShow(id);
++  } else if (auto* top = canvas->GetTopExecutionContext()) {
++    if (auto runner = top->GetAgentGroupSchedulerCompositorTaskRunner()) {
++      PostCrossThreadTask(*runner, FROM_HERE,
++                          CrossThreadBindOnce(&PortPlaceholderFrameShow, id));
++    }
++  }
++  return true;
++}
+ namespace {
+ class OffscreenCanvasRegistry
+     : public GarbageCollected<OffscreenCanvasRegistry>,
+@@ -669,12 +722,8 @@
+ 
+ bool OffscreenCanvas::PushFrameIfNeeded() {
+   if (needs_push_frame_ && context_) {
+-    bool should_call_push_frame = false;
+-    scoped_refptr<CanvasResource> canvas_resource =
+-        context_->GetResourceForPushFrame(should_call_push_frame);
+-    if (should_call_push_frame) {
+-      return PushFrame(std::move(canvas_resource));
+-    }
++    needs_push_frame_ = false;
++    return PortPushSnapshot(this);
+   }
+   return false;
+ }
+@@ -684,6 +733,10 @@
+   TRACE_EVENT0("blink", "OffscreenCanvas::PushFrame");
+   DCHECK(needs_push_frame_);
+   needs_push_frame_ = false;
++  // the placeholder takes snapshots, not resources (PortPushSnapshot)
++  if (HasPlaceholderCanvas()) {
++    return PortPushSnapshot(this);
++  }
+ 
+   if (!canvas_resource) {
+     return false;

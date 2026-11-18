@@ -1,0 +1,18 @@
+--- a/third_party/angle/src/libANGLE/renderer/gl/renderergl_utils.cpp
++++ b/third_party/angle/src/libANGLE/renderer/gl/renderergl_utils.cpp
+@@ -695,10 +695,14 @@
+     // GLES 3.0.5 section 4.4.2.2: "Implementations must support creation of renderbuffers in these
+     // required formats with up to the value of MAX_SAMPLES multisamples, with the exception of
+     // signed and unsigned integer formats."
++    // An OpenGL ES 3 driver is taken at its word: Mesa's software drivers draw without
++    // multisampling (GL_MAX_SAMPLES 1) and still give OpenGL ES 3, which WebGL 2 is then made on.
+     const gl::InternalFormat &glFormatInfo = gl::GetSizedInternalFormatInfo(internalFormat);
+     if (textureCaps.renderbuffer && !glFormatInfo.isInt() &&
+         glFormatInfo.isRequiredRenderbufferFormat(gl::Version(3, 0)) &&
+-        textureCaps.sampleCounts.getMaxSamples() < 4)
++        textureCaps.sampleCounts.getMaxSamples() < 4 &&
++        !(functions->standard == STANDARD_GL_ES &&
++          functions->isAtLeastGLES(gl::Version(3, 0))))
+     {
+         LimitVersion(maxSupportedESVersion, gl::Version(2, 0));
+     }

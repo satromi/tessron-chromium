@@ -12,7 +12,9 @@
  *	The parts of the Linux surface the engine's sources call that are
  *	answered from what a TessronOS process is (application/browser/port/
  *	shim, design 17.19): the machine's features, resource limits, and
- *	dynamic loading, of which there is none.
+ *	dynamic loading: the EGL linked in, and the Linux shared objects the
+ *	process has loaded from memory (ts_so.c, design 14.6.3), which
+ *	dlopen finds by the name they were loaded under.
  */
 
 #include <stddef.h>
@@ -47,6 +49,8 @@
 #include <string.h>
 #include <stdint.h>
 
+#include "ts_so.h"
+
 /*
  * Both machines TessronOS runs on are Cortex-A76 (QEMU's -cpu cortex-a76,
  * the Raspberry Pi 5): Armv8.2-A with the cryptographic extension.
@@ -58,7 +62,11 @@
 unsigned long getauxval( unsigned long type )
 {
 	switch ( type ) {
+#if defined(__x86_64__)
+	case AT_HWCAP:	return 0;	/* the sources ask x86-64's processor itself (CPUID) */
+#else
 	case AT_HWCAP:	return A76_HWCAP;
+#endif
 	case AT_HWCAP2:	return 0;
 	case AT_PAGESZ:	return 4096;
 	case AT_CLKTCK:	return 100;
@@ -82,14 +90,17 @@ int sysinfo( struct sysinfo *info )
 	return 0;
 }
 
+/* The processors the system runs tasks on (sysconf asks the kernel) */
 int get_nprocs( void )
 {
-	return 2;
+	long	n = sysconf(_SC_NPROCESSORS_ONLN);
+
+	return ( n > 0 ) ? (int)n : 1;
 }
 
 int get_nprocs_conf( void )
 {
-	return 2;
+	return get_nprocs();
 }
 
 int getrusage( int who, struct rusage *ru )
@@ -169,9 +180,34 @@ int inotify_rm_watch( int fd, int wd )
 	return -1;
 }
 
+/*
+ * The sockets the process may hold at once (include/ts/soapp.h, design
+ * 9.2): the soft limit and the hard one it may be raised to. They are
+ * declared here as the socket layer (lib/libcxxrt/ts_socket.c) does, the
+ * header being written for the system's own types. The errors are the
+ * system's: E_PAR (-17) for a soft limit above the hard one, E_OACV (-27)
+ * for a hard limit above what the caller may raise it to.
+ */
+extern int	so_getlimit( int *p_cur, int *p_max );
+extern int	so_setlimit( int cur, int max );
+#define TS_E_PAR	(-17)
+#define TS_E_OACV	(-27)
+
+/*
+ * RLIMIT_NOFILE is the limit on the process's sockets; every other
+ * resource is not limited. setrlimit refuses a soft limit above the hard
+ * one (EINVAL) and a hard limit the caller may not raise to, which includes
+ * RLIM_INFINITY and any count past the system's (EPERM).
+ */
 int getrlimit( int resource, struct rlimit *rl )
 {
-	(void)resource;
+	int	cur, max;
+
+	if ( resource == RLIMIT_NOFILE && so_getlimit(&cur, &max) >= 0 ) {
+		rl->rlim_cur = (rlim_t)cur;
+		rl->rlim_max = (rlim_t)max;
+		return 0;
+	}
 	rl->rlim_cur = RLIM_INFINITY;
 	rl->rlim_max = RLIM_INFINITY;
 	return 0;
@@ -179,8 +215,23 @@ int getrlimit( int resource, struct rlimit *rl )
 
 int setrlimit( int resource, const struct rlimit *rl )
 {
-	(void)resource; (void)rl;
-	return 0;
+	int	cur, max, er;
+
+	if ( resource != RLIMIT_NOFILE ) return 0;
+	if ( rl->rlim_cur > rl->rlim_max ) {
+		errno = EINVAL;
+		return -1;
+	}
+	if ( rl->rlim_max > 0x7fffffffUL ) {	/* more than any count the system holds */
+		errno = EPERM;
+		return -1;
+	}
+	cur = (int)rl->rlim_cur;
+	max = (int)rl->rlim_max;
+	er = so_setlimit(cur, max);
+	if ( er >= 0 ) return 0;
+	errno = ( er == TS_E_OACV ) ? EPERM : EINVAL;
+	return -1;
 }
 
 int getpriority( int which, int who )
@@ -320,10 +371,27 @@ int dl_iterate_phdr( int (*cb)( struct dl_phdr_info *info, size_t size, void *da
 
 static char	dl_msg[] = "dynamic loading is not available";
 
+/*
+ * The system's EGL, when the program is linked with TessronOS's Mesa
+ * (make GL=1): ANGLE's OpenGL ES backend opens it by name and looks up
+ * eglGetProcAddress in it, which then gives every EGL and GL function.
+ * Without Mesa the weak name is 0 and nothing is opened.
+ */
+typedef void	(*dl_fn)( void );
+extern dl_fn	eglGetProcAddress( const char *name ) __attribute__((weak));
+static char	dl_egl;		/* the handle of the EGL linked in */
+
 void *dlopen( const char *file, int mode )
 {
-	(void)file; (void)mode;
-	return NULL;
+	void	*h;
+
+	(void)mode;
+	if ( file != NULL && strstr(file, "EGL") != NULL && eglGetProcAddress != NULL ) {
+		return &dl_egl;
+	}
+	/* a shared object loaded from memory under this name (ts_so_load) */
+	h = ts_so_find(file);
+	return h;
 }
 
 extern int	_close( int fd );
@@ -336,29 +404,41 @@ extern int	_close( int fd );
  */
 void *dlsym( void *handle, const char *name )
 {
-	(void)handle;
+	if ( handle == &dl_egl ) {
+		return ( strcmp(name, "eglGetProcAddress") == 0 ) ? (void *)eglGetProcAddress
+			: (void *)eglGetProcAddress(name);
+	}
+	if ( ts_so_is_handle(handle) ) return ts_so_sym(handle, name);
 	if ( strcmp(name, "close") == 0 ) return (void *)_close;
 	return NULL;
 }
 
 int dlclose( void *handle )
 {
-	(void)handle;
+	if ( ts_so_is_handle(handle) ) return ts_so_close(handle);
 	return 0;
 }
 
 char *dlerror( void )
 {
-	return dl_msg;
+	const char *e = ts_so_error();
+	return ( e != NULL ) ? (char *)e : dl_msg;
 }
 
 int dladdr( const void *addr, Dl_info *info )
 {
-	(void)addr;
+	const char	*name;
+	void		*base;
+
 	info->dli_fname = NULL;
 	info->dli_fbase = NULL;
 	info->dli_sname = NULL;
 	info->dli_saddr = NULL;
+	if ( ts_so_addr(addr, &name, &base) ) {
+		info->dli_fname = name;
+		info->dli_fbase = base;
+		return 1;
+	}
 	return 0;
 }
 
@@ -366,10 +446,22 @@ int dladdr( const void *addr, Dl_info *info )
 char	*program_invocation_name = (char *)"browser";
 char	*program_invocation_short_name = (char *)"browser";
 
-/* No descriptor takes a device request */
+/*
+ * A device request: the GPU's descriptors take i915's (the DRM shim of
+ * lib/libgl, which Mesa's iris calls through ioctl); no other descriptor
+ * takes one. This ioctl comes before the shim's, so it hands those on.
+ */
+extern int ts_gpu_fd_ioctl( int fd, unsigned long request, void *arg ) __attribute__((weak));
+
 int ioctl( int fd, unsigned long request, ... )
 {
-	(void)fd; (void)request;
+	va_list	ap;
+	void	*arg;
+
+	va_start(ap, request);
+	arg = va_arg(ap, void *);
+	va_end(ap);
+	if ( ts_gpu_fd_ioctl != NULL ) return ts_gpu_fd_ioctl(fd, request, arg);
 	errno = ENOTTY;
 	return -1;
 }
@@ -479,3 +571,43 @@ int sched_getcpu( void )
 {
 	return 0;
 }
+
+#if defined(__x86_64__)
+/*
+ * The time stamp counter's ticks in a second (port/base/counter_tessronos.h),
+ * measured once against the monotonic clock over 20 ms. The counter of
+ * the processors TessronOS runs on keeps one rate whatever the clock of
+ * the cores (invariant TSC).
+ */
+static uint64_t tsc_read( void )
+{
+	uint32_t lo, hi;
+
+	__asm__ volatile ( "lfence; rdtsc" : "=a"(lo), "=d"(hi) : : "memory" );
+	return ( (uint64_t)hi << 32 ) | lo;
+}
+
+static int64_t ns_between( const struct timespec *a, const struct timespec *b )
+{
+	return ( (int64_t)b->tv_sec - a->tv_sec ) * 1000000000LL + ( b->tv_nsec - a->tv_nsec );
+}
+
+uint64_t br_counter_hz( void )
+{
+	static uint64_t	hz;
+	struct timespec	a, b;
+	uint64_t	t0, t1;
+	int64_t		ns;
+
+	if ( hz != 0 ) return hz;
+	clock_gettime(CLOCK_MONOTONIC, &a);
+	t0 = tsc_read();
+	do {
+		clock_gettime(CLOCK_MONOTONIC, &b);
+		ns = ns_between(&a, &b);
+	} while ( ns < 20000000 );
+	t1 = tsc_read();
+	hz = (uint64_t)( (unsigned __int128)( t1 - t0 ) * 1000000000ULL / (uint64_t)ns );
+	return hz;
+}
+#endif

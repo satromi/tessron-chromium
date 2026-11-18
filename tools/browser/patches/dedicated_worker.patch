@@ -1,0 +1,17 @@
+--- a/third_party/blink/renderer/core/workers/dedicated_worker.cc
++++ b/third_party/blink/renderer/core/workers/dedicated_worker.cc
+@@ -309,6 +309,14 @@
+     GetExecutionContext()->CountUse(WebFeature::kDataUrlDedicatedWorker);
+   }
+ 
++  if (!factory_client_) {
++    // Nothing makes the worker's host here: the worker ends as one whose
++    // script could not be fetched does (its error event), and the page
++    // goes on without it.
++    context_proxy_->DidFailToFetchScript();
++    return;
++  }
++
+   factory_client_->CreateWorkerHost(
+       token_, script_request_url_, credentials_mode,
+       WebFetchClientSettingsObject(*outside_fetch_client_settings_object_),

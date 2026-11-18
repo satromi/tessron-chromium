@@ -1,0 +1,12 @@
+--- a/third_party/blink/renderer/core/css/media_values.cc
++++ b/third_party/blink/renderer/core/css/media_values.cc
+@@ -347,5 +347,8 @@
+ 
+ bool MediaValues::CalculateThreeDEnabled(LocalFrame* frame) {
+-  return frame->GetPage()->GetSettings().GetAcceleratedCompositingEnabled();
++  // 3D transforms are drawn (the page's layers flattened as it paints
++  // without a compositor), so (transform-3d) and (-webkit-transform-3d)
++  // match as in a browser that composites.
++  return true;
+ }
+ 

@@ -1,0 +1,10 @@
+# The GPU process's service of the command buffer (build.sh gpusvc_lib,
+# design 14.13): the decoders, the shared images, the scheduler and the
+# sync points, and the common part of ui/gl's one-off initialisation
+//gpu/command_buffer/service:gles2_sources
+//gpu/command_buffer/service:service_sources
+//ui/gl/init:init
+# the GL's implementation as the GPU's information carries it to a
+# renderer (gpu.mojom.GpuInfo's gl_implementation_parts)
+//ui/gl/mojom:mojom
+//ui/gl/mojom:mojom_shared_cpp_sources

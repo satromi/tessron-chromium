@@ -1,0 +1,66 @@
+--- a/third_party/blink/renderer/bindings/modules/v8/v8_context_snapshot_impl.cc
++++ b/third_party/blink/renderer/bindings/modules/v8/v8_context_snapshot_impl.cc
+@@ -25,7 +25,9 @@
+ #include "third_party/blink/renderer/platform/bindings/v8_per_context_data.h"
+ #include "third_party/blink/renderer/platform/bindings/v8_per_isolate_data.h"
+ #include "third_party/blink/renderer/platform/bindings/v8_private_property.h"
++#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+ #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
++#include "third_party/blink/renderer/platform/wtf/wtf.h"
+ #include "tools/v8_context_snapshot/buildflags.h"
+ 
+ #if defined(V8_USE_EXTERNAL_STARTUP_DATA)
+@@ -46,6 +48,18 @@
+   return false;
+ }
+ 
++// Without a context snapshot, the main thread's main world is built as if it
++// came from one: the interface templates of the types a snapshot holds are
++// made with no runtime-enabled feature on, as a snapshot's are, and each
++// context gets the runtime-enabled properties of those types afterwards.
++// The global object then lists its properties in the order a browser with a
++// snapshot gives (the runtime-enabled ones after the others).
++bool g_emulating_snapshot = false;
++
++bool EmulatesContextSnapshot(const DOMWrapperWorld& world) {
++  return g_emulating_snapshot && IsMainThread() && world.IsMainWorld();
++}
++
+ }  // namespace
+ 
+ void V8ContextSnapshotImpl::Init() {
+@@ -352,7 +366,8 @@
+ 
+ void V8ContextSnapshotImpl::InstallContextIndependentProps(
+     ScriptState* script_state) {
+-  if (!IsUsingContextSnapshot()) {
++  if (!IsUsingContextSnapshot() &&
++      !EmulatesContextSnapshot(script_state->World())) {
+     return;
+   }
+ 
+@@ -386,6 +401,24 @@
+ 
+ void V8ContextSnapshotImpl::InstallInterfaceTemplates(v8::Isolate* isolate) {
+   if (!IsUsingContextSnapshot()) {
++    // The main thread's isolate, set up before any context: its main world's
++    // templates of the snapshot's types are made now with every runtime
++    // feature off, and the features are put back as they were.
++    if (!IsMainThread() || g_emulating_snapshot) {
++      return;
++    }
++    v8::HandleScope handle_scope(isolate);
++    const DOMWrapperWorld& world = DOMWrapperWorld::MainWorld(isolate);
++    RuntimeEnabledFeatures::Backup features;
++    RuntimeEnabledFeatures::SetStableFeaturesEnabled(false);
++    RuntimeEnabledFeatures::SetExperimentalFeaturesEnabled(false);
++    RuntimeEnabledFeatures::SetTestFeaturesEnabled(false);
++    for (const auto& type_info : type_info_table) {
++      std::ignore = type_info.wrapper_type_info->GetV8ClassTemplate(isolate,
++                                                                    world);
++    }
++    features.Restore();
++    g_emulating_snapshot = true;
+     return;
+   }
+ 

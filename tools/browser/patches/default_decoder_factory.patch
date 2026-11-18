@@ -1,0 +1,29 @@
+--- a/media/renderers/default_decoder_factory.cc
++++ b/media/renderers/default_decoder_factory.cc
+@@ -55,6 +55,13 @@
+ 
+ namespace media {
+ 
++// A decoder of the machine's own, which the embedder gives when the machine
++// has one (TessronOS: the HEVC decoder of the Raspberry Pi 5), tried before
++// the software decoders; none when it gives none.
++std::unique_ptr<VideoDecoder> (*g_platform_video_decoder)(
++    scoped_refptr<base::SequencedTaskRunner>,
++    MediaLog*) = nullptr;
++
+ DefaultDecoderFactory::DefaultDecoderFactory(
+     std::unique_ptr<DecoderFactory> external_decoder_factory)
+     : external_decoder_factory_(std::move(external_decoder_factory)) {}
+@@ -132,6 +139,12 @@
+       std::make_unique<DecryptingVideoDecoder>(task_runner, media_log));
+ #endif
+ 
++  if (g_platform_video_decoder) {
++    if (auto decoder = g_platform_video_decoder(task_runner, media_log)) {
++      video_decoders->push_back(std::move(decoder));
++    }
++  }
++
+   // Prefer an external decoder since one will only exist if it is hardware
+   // accelerated.
+   if (external_decoder_factory_ && gpu_factories &&

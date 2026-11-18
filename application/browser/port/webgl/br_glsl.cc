@@ -1567,9 +1567,13 @@ const std::vector<VarInfo>& Uniforms(const Program* p) {
   return p->uniforms;
 }
 
+const float kSamplePos[kMaxSamples][2] = {
+    {0.375f, 0.125f}, {0.875f, 0.375f}, {0.125f, 0.625f}, {0.625f, 0.875f}};
+
 bool Draw(Program* p, const DrawTarget& tgt, const DrawParams& dp) {
   if (tgt.color == nullptr || dp.count <= 0)
     return false;
+  const int ns = tgt.samples > 1 ? kMaxSamples : 1;
 
   const int nvary = (int)p->varyings.size();
   std::vector<Val> globals(p->globals.size());
@@ -1643,8 +1647,25 @@ bool Draw(Program* p, const DrawTarget& tgt, const DrawParams& dp) {
   // fragment varyings scratch
   std::vector<Val> frag_vary(nvary > 0 ? nvary : 1);
 
+  auto depth_pass = [&](float z, float d) -> bool {
+    switch (dp.depth_func) {
+      case 0x0200: return false;            // NEVER
+      case 0x0201: return z < d;            // LESS
+      case 0x0202: return z == d;           // EQUAL
+      case 0x0203: return z <= d;           // LEQUAL
+      case 0x0204: return z > d;            // GREATER
+      case 0x0205: return z != d;           // NOTEQUAL
+      case 0x0206: return z >= d;           // GEQUAL
+      default: return true;                 // ALWAYS
+    }
+  };
+
+  // A fragment of the pixel (px, py) covering the samples of |mask| (bit s
+  // the sample s; 1 on a target of one sample): its colour from the
+  // fragment shader, run once for the pixel, written to each sample that
+  // passes the depth test, as multisampling does
   auto shade_pixel = [&](int px, int py, float z, const Val* varys,
-                         bool front) {
+                         bool front, unsigned mask = 0xf) {
     if (dp.scissor) {
       int sy_top = tgt.h - (dp.scissor_box[1] + dp.scissor_box[3]);
       if (px < dp.scissor_box[0] ||
@@ -1652,21 +1673,18 @@ bool Draw(Program* p, const DrawTarget& tgt, const DrawParams& dp) {
           py >= sy_top + dp.scissor_box[3])
         return;
     }
-    float* dpx = tgt.depth != nullptr ? &tgt.depth[(size_t)py * tgt.w + px]
-                                      : nullptr;
+    if (ns == 1)
+      mask = 1;
+    size_t at = ((size_t)py * tgt.w + px) * ns;
+    float* dpx = tgt.depth != nullptr ? &tgt.depth[at] : nullptr;
     if (dp.depth_test && dpx != nullptr) {
-      bool pass = true;
-      switch (dp.depth_func) {
-        case 0x0200: pass = false; break;             // NEVER
-        case 0x0201: pass = z < *dpx; break;          // LESS
-        case 0x0202: pass = z == *dpx; break;         // EQUAL
-        case 0x0203: pass = z <= *dpx; break;         // LEQUAL
-        case 0x0204: pass = z > *dpx; break;          // GREATER
-        case 0x0205: pass = z != *dpx; break;         // NOTEQUAL
-        case 0x0206: pass = z >= *dpx; break;         // GEQUAL
-        case 0x0207: pass = true; break;              // ALWAYS
+      unsigned pass = 0;
+      for (int s = 0; s < ns; ++s) {
+        if ((mask & (1u << s)) && depth_pass(z, dpx[s]))
+          pass |= 1u << s;
       }
-      if (!pass)
+      mask = pass;
+      if (mask == 0)
         return;
     }
     for (int v = 0; v < nvary; ++v)
@@ -1684,12 +1702,16 @@ bool Draw(Program* p, const DrawTarget& tgt, const DrawParams& dp) {
     if (!RunMain(ctx, p->fs_funcs, p->fs_ginit))
       return;  // discard
     const float* col = ctx.builtins[BI_FRAGCOLOR].f;
-    float out[4];
+    float src[4];
     for (int i = 0; i < 4; ++i) {
       float x = col[i];
-      out[i] = x < 0 ? 0 : x > 1 ? 1 : x;
+      src[i] = x < 0 ? 0 : x > 1 ? 1 : x;
     }
-    unsigned char* d = tgt.color + ((size_t)py * tgt.w + px) * 4;
+    for (int s = 0; s < ns; ++s) {
+    if ((mask & (1u << s)) == 0)
+      continue;
+    float out[4] = {src[0], src[1], src[2], src[3]};
+    unsigned char* d = tgt.color + (at + s) * 4;
     if (dp.blend) {
       float dst[4] = {d[0] / 255.f, d[1] / 255.f, d[2] / 255.f, d[3] / 255.f};
       auto factor = [&](int mode, bool for_src) -> float {
@@ -1713,7 +1735,8 @@ bool Draw(Program* p, const DrawTarget& tgt, const DrawParams& dp) {
     for (int i = 0; i < 4; ++i)
       d[i] = (unsigned char)(out[i] * 255.f + 0.5f);
     if (dpx != nullptr && dp.depth_test && dp.depth_write)
-      *dpx = z;
+      dpx[s] = z;
+    }
   };
 
   auto raster_tri = [&](const VtxOut& a, const VtxOut& b, const VtxOut& c) {
@@ -1743,14 +1766,48 @@ bool Draw(Program* p, const DrawTarget& tgt, const DrawParams& dp) {
     if (x1 > tgt.w) x1 = tgt.w;
     if (y1 > tgt.h) y1 = tgt.h;
     float inv_area = 1.f / area;
+    auto inside = [&](float fx, float fy, float* l0, float* l1, float* l2) {
+      *l0 = ((bx - fx) * (cy - fy) - (by - fy) * (cx - fx)) * inv_area;
+      *l1 = ((cx - fx) * (ay - fy) - (cy - fy) * (ax - fx)) * inv_area;
+      *l2 = 1.f - *l0 - *l1;
+      return *l0 >= 0 && *l1 >= 0 && *l2 >= 0;
+    };
     for (int py = y0; py < y1; ++py) {
       for (int px = x0; px < x1; ++px) {
         float fx = px + 0.5f, fy = py + 0.5f;
-        float l0 = ((bx - fx) * (cy - fy) - (by - fy) * (cx - fx)) * inv_area;
-        float l1 = ((cx - fx) * (ay - fy) - (cy - fy) * (ax - fx)) * inv_area;
-        float l2 = 1.f - l0 - l1;
-        if (l0 < 0 || l1 < 0 || l2 < 0)
-          continue;
+        float l0, l1, l2;
+        unsigned mask = 0;
+        if (ns == 1) {
+          if (!inside(fx, fy, &l0, &l1, &l2))
+            continue;
+          mask = 1;
+        } else {
+          // the samples the triangle covers; the fragment is shaded where
+          // the pixel's centre is, or at the first sample covered when the
+          // centre is outside
+          float s0 = 0, s1 = 0, s2 = 0;
+          int first = -1;
+          for (int s = 0; s < ns; ++s) {
+            float t0, t1, t2;
+            if (inside(px + kSamplePos[s][0], py + kSamplePos[s][1], &t0, &t1,
+                       &t2)) {
+              mask |= 1u << s;
+              if (first < 0) {
+                first = s;
+                s0 = t0;
+                s1 = t1;
+                s2 = t2;
+              }
+            }
+          }
+          if (mask == 0)
+            continue;
+          if (!inside(fx, fy, &l0, &l1, &l2)) {
+            l0 = s0;
+            l1 = s1;
+            l2 = s2;
+          }
+        }
         float z = l0 * az + l1 * bz + l2 * cz;
         float wsum = l0 * aw + l1 * bw + l2 * cw;
         if (wsum == 0)
@@ -1764,7 +1821,7 @@ bool Draw(Program* p, const DrawTarget& tgt, const DrawParams& dp) {
             out.f[i] = k0 * a.varyings[v].f[i] + k1 * b.varyings[v].f[i] +
                        k2 * c.varyings[v].f[i];
         }
-        shade_pixel(px, py, z, frag_vary.data(), front);
+        shade_pixel(px, py, z, frag_vary.data(), front, mask);
       }
     }
   };

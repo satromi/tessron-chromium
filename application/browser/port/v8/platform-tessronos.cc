@@ -15,9 +15,14 @@
 //
 // Memory is the process's own (include/ts/umem.h): a reservation holds
 // addresses without pages, pages are made in it with the protection asked
-// for and taken away again. A page is never executable -- a process can
-// neither write code nor make written memory runnable -- so V8 runs
-// --jitless and every request for an executable mapping fails.
+// for and taken away again. No page is writable and executable at once.
+// V8 asks for its code space readable, writable and executable and writes
+// into it the code it runs; that memory is given as written and run by
+// turns (TS_MEM_JIT): each page is made when first touched, and is
+// writable or executable, the kernel turning it on the fault of a write
+// or of running it, and making the instructions fetchable on every
+// processor when it becomes executable. Read and execute is a page that
+// stays executable.
 //
 // Threads, their local storage and the stack bounds come from
 // lib/libpthread; time from lib/libcxxrt and the system's time zone.
@@ -51,6 +56,8 @@ ER_ dt_getsystz(int* p_minutes);
 int ts_get_pid(void);
 int tk_get_tid(void);
 void ts_ext_prc(int exitcd) __attribute__((noreturn));
+// The browser's console ring put out before the process ends (br_main.cc); absent elsewhere
+void br_console_drain(long ms) __attribute__((weak));
 }
 
 namespace {
@@ -59,6 +66,9 @@ namespace {
 constexpr unsigned kMemNone = 0x00;
 constexpr unsigned kMemRead = 0x01;
 constexpr unsigned kMemRW = 0x03;
+constexpr unsigned kMemExec = 0x04;
+constexpr unsigned kMemJit = kMemRW | kMemExec;
+constexpr unsigned kMemDiscard = 0x08;
 
 constexpr size_t kPageSize = 4096;
 
@@ -77,8 +87,11 @@ bool ToProt(v8::base::OS::MemoryPermission access, unsigned* prot) {
       *prot = kMemRW;
       return true;
     case P::kReadWriteExecute:
+      *prot = kMemJit;
+      return true;
     case P::kReadExecute:
-      return false;
+      *prot = kMemRead | kMemExec;
+      return true;
   }
   return false;
 }
@@ -157,8 +170,11 @@ bool OS::RecommitPages(void* address, size_t size, MemoryPermission access) {
   return SetPermissions(address, size, access);
 }
 
-// The pages may be dropped; keeping them is allowed and keeps their access.
-bool OS::DiscardSystemPages(void* address, size_t size) { return true; }
+// The pages given back to the system: writable ones are made again, zero
+// filled, when touched, and keep their access (include/ts/umem.h).
+bool OS::DiscardSystemPages(void* address, size_t size) {
+  return ts_ctl_mem(address, static_cast<long>(RoundUp(size)), kMemDiscard) == 0;
+}
 
 bool OS::DecommitPages(void* address, size_t size) {
   return ts_ctl_mem(address, static_cast<long>(RoundUp(size)), kMemNone) == 0;
@@ -171,7 +187,8 @@ bool OS::SetMemoryRegionName(const void* address, size_t size,
   return true;
 }
 
-bool OS::HasLazyCommits() { return false; }
+// A writable page is made when it is first touched.
+bool OS::HasLazyCommits() { return true; }
 
 bool OS::CanReserveAddressSpace() { return true; }
 
@@ -303,6 +320,7 @@ void OS::Abort() {
     fp = next;
   }
   fflush(stderr);
+  if (br_console_drain != nullptr) br_console_drain(3000);
   if (g_abort_mode == AbortMode::kImmediateCrash) {
     __builtin_trap();
   }
@@ -314,6 +332,7 @@ void OS::DebugBreak() { __builtin_trap(); }
 void OS::ExitProcess(int exit_code) {
   fflush(stdout);
   fflush(stderr);
+  if (br_console_drain != nullptr) br_console_drain(3000);
   ts_ext_prc(exit_code);
 }
 

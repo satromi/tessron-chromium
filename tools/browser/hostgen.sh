@@ -13,9 +13,20 @@
 # Stops before it starts when the Windows drive that holds WSL's disk has
 # less than MINFREE_GB left: WSL's disk grows on it.
 #
+# TS_ARCH=x86_64 runs it in $CR/out/tessronos_x64 (gngen.sh): mksnapshot
+# is then an x86-64 program built with Chromium's clang (args_x64.gn), and
+# the target's toolchain that is stood in for is the gcc one (gcc, g++).
+#
 set -e
 CR=${CR:-$HOME/cr6/src}
-OUT=${OUT:-tessronos}
+if [ "${TS_ARCH:-aarch64}" = x86_64 ]; then
+	OUT=${OUT:-tessronos_x64}
+	FAKEPFX=
+	FAKE=${FAKE:-$HOME/tessronos-obj-x64/fakecc}
+else
+	OUT=${OUT:-tessronos}
+	FAKEPFX=aarch64-linux-gnu-
+fi
 NINJA=${NINJA:-$HOME/btron-upgrade/gnpkg153/ninja}
 PYBIN=${PYBIN:-$HOME/bin}
 JOBS=${JOBS:-4}
@@ -28,7 +39,7 @@ if [ "${free_gb:-0}" -lt "$MINFREE_GB" ]; then
 fi
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-GENLISTS=${GENLISTS:-"$HERE/gen_v8.txt $HERE/gen_skia.txt"}
+GENLISTS=${GENLISTS:-"$HERE/gen_v8.txt $HERE/gen_skia.txt $HERE/gen_gpu.txt"}
 cd "$CR"
 TARGETS="v8:run_mksnapshot_default v8:v8_generated_cc_files v8:run_torque \
 	v8:generate_bytecode_builtins_list gen/third_party/icu/icudtl_dat.S $*"
@@ -43,7 +54,7 @@ done
 FAKE=${FAKE:-$HOME/tessronos-obj/fakecc}
 mkdir -p "$FAKE"
 for t in gcc g++ ar nm readelf; do
-	cat > "$FAKE/aarch64-linux-gnu-$t" <<'EOF'
+	cat > "$FAKE/$FAKEPFX$t" <<'EOF'
 #!/bin/sh
 out=
 while [ $# -gt 0 ]; do
@@ -57,8 +68,10 @@ done
 [ -n "$out" ] && : > "$out"
 exit 0
 EOF
-	chmod +x "$FAKE/aarch64-linux-gnu-$t"
+	chmod +x "$FAKE/$FAKEPFX$t"
 done
-PATH="$PYBIN:$FAKE:$PATH" "$NINJA" -C "out/$OUT" -j "$JOBS" $TARGETS
+# HOSTGEN_NINJA_FLAGS: more for ninja (blink.sh gen on x86-64 goes on past
+# what fails, -k 0)
+PATH="$PYBIN:$FAKE:$PATH" "$NINJA" -C "out/$OUT" -j "$JOBS" ${HOSTGEN_NINJA_FLAGS:-} $TARGETS
 ls -la "out/$OUT/gen/v8/embedded.S" "out/$OUT/gen/v8/snapshot.cc" \
 	"out/$OUT/gen/third_party/icu/icudtl_dat.S"

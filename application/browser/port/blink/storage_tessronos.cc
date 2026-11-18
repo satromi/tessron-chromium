@@ -20,8 +20,15 @@
  *	The local store is written back to a real object (port/net/
  *	br_store.cc) a couple of seconds after it changes and read back when
  *	the engine starts; the session store lasts as long as the process.
- *	The storage event is not sent (no other window of the same origin
- *	shares the store).
+ *	A change is told to the other windows of the same origin with the
+ *	storage event, as a window of another tab would be told; the window
+ *	that made it is not told.
+ *
+ *	The local store is kept an entry for each item (the origin, a zero byte
+ *	and the item's key), so that browsers of windows opened apart, which are
+ *	processes of their own, keep each other's items, as the tabs of a browser
+ *	share them. What another browser changed is taken in and told with the
+ *	storage event too; its url is then the origin.
  */
 
 #include <stdio.h>
@@ -34,14 +41,21 @@
 #include <vector>
 
 #include "third_party/blink/renderer/core/dom/quota_exceeded_error.h"
+#include "third_party/blink/renderer/core/event_type_names.h"
+#include "third_party/blink/renderer/core/frame/frame.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
+#include "third_party/blink/renderer/core/page/frame_tree.h"
+#include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/modules/storage/dom_window_storage.h"
 #include "third_party/blink/renderer/modules/storage/storage_area.h"
+#include "third_party/blink/renderer/modules/storage/storage_event.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
+#include "../net/br_data.h"
 #include "../net/br_store.h"
 
 namespace blink {
@@ -77,9 +91,9 @@ size_t used( const Items &items )
 /* ------------------------------------------------ the local store kept in its object */
 
 /*
- * "BRLS", 1, the number of origins, then for each its name, the number of
- * its entries and the entries, each string a 32-bit little-endian length
- * and its UTF-8
+ * An older browser's record, kept as the entry of the empty key: "BRLS", 1,
+ * the number of origins, then for each its name, the number of its entries
+ * and the entries, each string a 32-bit little-endian length and its UTF-8
  */
 constexpr char kLocal[] = " local";
 int g_store_id = -1;
@@ -131,29 +145,17 @@ bool is_local( const std::string &name )
 	return name.size() > k && name.compare(name.size() - k, k, kLocal) == 0;
 }
 
-int write_local( void *, unsigned char **data, int *len )
+void snapshot_local( void *, br_store_delta *all )
 {
-	std::string out("BRLS", 4);
-	put32(&out, 1);
-	uint32_t areas = 0;
 	for ( const auto &a : stores() ) {
-		if ( is_local(a.first) && !a.second.empty() ) areas++;
-	}
-	put32(&out, areas);
-	for ( const auto &a : stores() ) {
-		if ( !is_local(a.first) || a.second.empty() ) continue;
-		put_str(&out, a.first.substr(0, a.first.size() - ( sizeof(kLocal) - 1 )));
-		put32(&out, (uint32_t)a.second.size());
+		if ( !is_local(a.first) ) continue;
+		std::string org = a.first.substr(0, a.first.size() - ( sizeof(kLocal) - 1 ));
+		org.push_back('\0');
 		for ( const auto &kv : a.second ) {
-			put_str(&out, kv.first.Utf8());
-			put_str(&out, kv.second.Utf8());
+			std::string key = org + kv.first.Utf8(), val = kv.second.Utf8();
+			br_store_delta_put(all, key.data(), (int)key.size(), val.data(), (int)val.size());
 		}
 	}
-	*data = (unsigned char *)malloc(out.size());
-	if ( *data == nullptr ) return -1;
-	memcpy(*data, out.data(), out.size());
-	*len = (int)out.size();
-	return 0;
 }
 
 void changed( StorageArea::StorageType type )
@@ -271,7 +273,76 @@ static Items &items_of( const LocalDOMWindow *w, StorageArea::StorageType type )
 {
 	std::string name = w->GetSecurityOrigin()->ToString().Utf8();
 	name += ( type == StorageArea::StorageType::kLocalStorage ) ? kLocal : " session";
+	if ( type == StorageArea::StorageType::kLocalStorage ) br_site_touch(w->GetSecurityOrigin()->ToString().Utf8());
 	return stores()[name];
+}
+
+/*
+ * A change told to the other windows of the origin, on each one's Storage
+ * object of the same kind: of every page for the local store, which all of
+ * them share, and of the page's frames for the session store. 'from' is the
+ * window that made it; none when another browser did. key, old_value and
+ * new_value are null for clear().
+ */
+static void tell_frames( Frame *top, const String &origin, LocalDOMWindow *from, StorageArea::StorageType type,
+			 const String &key, const String &old_value, const String &new_value, const KURL &url )
+{
+	for ( Frame *f = top; f != nullptr; f = f->Tree().TraverseNext() ) {
+		auto *lf = DynamicTo<LocalFrame>(f);
+		LocalDOMWindow *w = ( lf != nullptr ) ? lf->DomWindow() : nullptr;
+		if ( w == nullptr || w == from || w->GetSecurityOrigin()->IsOpaque()
+		     || w->GetSecurityOrigin()->ToString() != origin ) {
+			continue;
+		}
+		NonThrowableExceptionState es;
+		StorageArea *area = ( type == StorageArea::StorageType::kLocalStorage )
+				    ? DOMWindowStorage::localStorage(*w, es)
+				    : DOMWindowStorage::sessionStorage(*w, es);
+		if ( area != nullptr ) area->EnqueueStorageEvent(key, old_value, new_value, url);
+	}
+}
+
+static void tell_local( const String &origin, LocalDOMWindow *from, const String &key, const String &old_value,
+			const String &new_value, const KURL &url )
+{
+	for ( Page *page : Page::OrdinaryPages() ) {
+		tell_frames(page->MainFrame(), origin, from, StorageArea::StorageType::kLocalStorage, key, old_value, new_value, url);
+	}
+}
+
+static void tell_others( LocalDOMWindow *from, StorageArea::StorageType type, const String &key,
+			 const String &old_value, const String &new_value )
+{
+	if ( from == nullptr || from->GetFrame() == nullptr ) return;
+	String origin = from->GetSecurityOrigin()->ToString();
+	if ( type == StorageArea::StorageType::kLocalStorage ) {
+		tell_local(origin, from, key, old_value, new_value, from->Url());
+	} else {
+		tell_frames(&from->GetFrame()->Tree().Top(), origin, from, type, key, old_value, new_value, from->Url());
+	}
+}
+
+/* An item another browser changed: 'val' NULL when it is gone */
+void br_storage_take( void *, const char *key, int klen, const unsigned char *val, int vlen )
+{
+	const char *z = klen > 0 ? (const char *)memchr(key, 0, (size_t)klen) : nullptr;
+	if ( z == nullptr ) return;
+	std::string org(key, (size_t)( z - key ));
+	String item = String::FromUtf8(std::string(z + 1, (size_t)( key + klen - z - 1 )));
+	Items &items = stores()[org + kLocal];
+	size_t i = find_key(items, item);
+	String old_value = i < items.size() ? items[i].second : String(), new_value;
+	if ( val != nullptr ) {
+		new_value = String::FromUtf8(std::string((const char *)val, (size_t)vlen));
+		if ( i < items.size() ) items[i].second = new_value;
+		else items.emplace_back(item, new_value);
+	} else if ( i < items.size() ) {
+		items.erase(items.begin() + (long)i);
+	} else {
+		return;
+	}
+	String origin = String::FromUtf8(org);
+	tell_local(origin, nullptr, item, old_value, new_value, KURL(origin));
 }
 
 unsigned StorageArea::length( ExceptionState &es ) const
@@ -319,12 +390,16 @@ NamedPropertySetterResult StorageArea::setItem( const String &key, const String 
 						       "' exceeded the quota."}));
 		return NamedPropertySetterResult::kIntercepted;
 	}
+	String old_value;
 	if ( i < items.size() ) {
+		old_value = items[i].second;
+		if ( old_value == value ) return NamedPropertySetterResult::kIntercepted;
 		items[i].second = value;
 	} else {
 		items.emplace_back(key, value);
 	}
 	changed(storage_type_);
+	tell_others(DomWindow(), storage_type_, key, old_value, value);
 	return NamedPropertySetterResult::kIntercepted;
 }
 
@@ -337,8 +412,10 @@ NamedPropertyDeleterResult StorageArea::removeItem( const String &key, Exception
 	Items &items = items_of(DomWindow(), storage_type_);
 	size_t i = find_key(items, key);
 	if ( i < items.size() ) {
+		String old_value = items[i].second;
 		items.erase(items.begin() + (long)i);
 		changed(storage_type_);
+		tell_others(DomWindow(), storage_type_, key, old_value, String());
 	}
 	return NamedPropertyDeleterResult::kDeleted;
 }
@@ -349,8 +426,11 @@ void StorageArea::clear( ExceptionState &es )
 		es.ThrowSecurityError(kAccessDeniedMessage);
 		return;
 	}
-	items_of(DomWindow(), storage_type_).clear();
+	Items &items = items_of(DomWindow(), storage_type_);
+	if ( items.empty() ) return;
+	items.clear();
 	changed(storage_type_);
+	tell_others(DomWindow(), storage_type_, String(), String(), String());
 }
 
 bool StorageArea::Contains( const String &key, ExceptionState &es ) const
@@ -396,8 +476,14 @@ KURL StorageArea::GetPageUrl() const
 	return DomWindow() ? DomWindow()->Url() : KURL();
 }
 
-bool StorageArea::EnqueueStorageEvent( const String &, const String &, const String &, const KURL & )
+bool StorageArea::EnqueueStorageEvent( const String &key, const String &old_value, const String &new_value,
+				       const KURL &url )
 {
+	if ( !should_enqueue_events_ ) return true;
+	if ( DomWindow() == nullptr ) return false;
+	DomWindow()->EnqueueWindowEvent(*StorageEvent::Create(event_type_names::kStorage, key, old_value,
+							      new_value, url, this),
+					TaskType::kDOMManipulation);
 	return true;
 }
 
@@ -417,34 +503,74 @@ void StorageArea::OnDocumentActivatedForPrerendering() {}
 
 }  // namespace blink
 
+/* What localStorage keeps of the origins a clearing takes emptied, in place: pages hold their items by reference */
+void br_storage_clear( const BrClear &c )
+{
+	using namespace blink;
+	bool any = false;
+	for ( auto &kv : stores() ) {
+		size_t n = kv.first.size(), l = strlen(kLocal);
+		if ( n < l || kv.first.compare(n - l, l, kLocal) != 0 || kv.second.empty() ) continue;
+		if ( !br_clear_origin_hit(c, kv.first.substr(0, n - l)) ) continue;
+		kv.second.clear();
+		any = true;
+	}
+	if ( any && g_store_id >= 0 ) br_store_dirty(g_store_id);
+}
+
+void br_storage_sites( std::set<std::string> *out )
+{
+	using namespace blink;
+	for ( const auto &kv : stores() ) {
+		size_t n = kv.first.size(), l = strlen(kLocal);
+		if ( n >= l && kv.first.compare(n - l, l, kLocal) == 0 && !kv.second.empty() ) out->insert(br_site_of(kv.first.substr(0, n - l)));
+	}
+}
+
+/* An entry of the store read back: an item, or an older browser's whole record */
+static void restore_entry( void *ctx, const char *key, int klen, const unsigned char *val, int vlen )
+{
+	using namespace blink;
+	int *origins = (int *)ctx;
+	if ( klen > 0 ) {
+		const char *z = (const char *)memchr(key, 0, (size_t)klen);
+		if ( z == nullptr ) return;
+		stores()[std::string(key, (size_t)( z - key )) + kLocal].emplace_back(
+			String::FromUtf8(std::string(z + 1, (size_t)( key + klen - z - 1 ))),
+			String::FromUtf8(std::string((const char *)val, (size_t)vlen)));
+		return;
+	}
+	Reader r{ val, (size_t)vlen };
+	if ( vlen < 8 || memcmp(val, "BRLS", 4) != 0 ) return;
+	r.p += 4;
+	r.n -= 4;
+	if ( r.u32() != 1 ) return;
+	uint32_t areas = r.u32();
+	for ( uint32_t a = 0; a < areas && r.ok; a++ ) {
+		std::string name = r.str();
+		uint32_t count = r.u32();
+		Items &items = stores()[name + kLocal];
+		for ( uint32_t i = 0; i < count && r.ok; i++ ) {
+			std::string k = r.str(), v = r.str();
+			if ( r.ok ) items.emplace_back(String::FromUtf8(k), String::FromUtf8(v));
+		}
+		(*origins)++;
+	}
+	/* entries of their own from the next save, which this asks for */
+	br_store_dirty(g_store_id);
+}
+
 /* The local store read back from its object, and saved two seconds after each change */
 void br_storage_restore()
 {
 	using namespace blink;
-	unsigned char	*data = nullptr;
-	int		len = 0, origins = 0;
+	int origins = 0;
 
 	if ( g_store_id >= 0 ) return;
-	g_store_id = br_store_register("storage", write_local, nullptr, 2000);
-	if ( br_store_load("storage", &data, &len) != 0 ) return;
-	Reader r{ data, (size_t)len };
-	if ( len >= 8 && memcmp(data, "BRLS", 4) == 0 ) {
-		r.p += 4;
-		r.n -= 4;
-		if ( r.u32() == 1 ) {
-			uint32_t areas = r.u32();
-			for ( uint32_t a = 0; a < areas && r.ok; a++ ) {
-				std::string name = r.str();
-				uint32_t count = r.u32();
-				Items &items = stores()[name + kLocal];
-				for ( uint32_t i = 0; i < count && r.ok; i++ ) {
-					std::string k = r.str(), v = r.str();
-					if ( r.ok ) items.emplace_back(String::FromUtf8(k), String::FromUtf8(v));
-				}
-				origins++;
-			}
-		}
+	g_store_id = br_store_register_shared("storage", snapshot_local, br_storage_take, nullptr, 2000);
+	(void)br_store_load_shared(g_store_id, restore_entry, &origins);
+	for ( const auto &kv : stores() ) {
+		if ( is_local(kv.first) && !kv.second.empty() ) origins++;
 	}
-	free(data);
 	printf("browser: local storage of %d origin(s) read back\n", origins);
 }

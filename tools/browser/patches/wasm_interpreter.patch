@@ -1,0 +1,121 @@
+--- a/v8/src/wasm/interpreter/wasm-interpreter.cc
++++ b/v8/src/wasm/interpreter/wasm-interpreter.cc
+@@ -28,6 +28,15 @@
+ // Include this after all other object headers.
+ #include "src/objects/object-macros.h"
+ 
++// Each instruction handler ends by calling the next one. Unless the call
++// is made a jump, every instruction run takes a frame of the machine's
++// stack and a long loop runs out of it; gcc is told to make it one (and
++// refuses to compile a handler where it cannot), as clang is.
++#if !defined(__clang__) && defined(__GNUC__) && __GNUC__ >= 15
++#undef MUSTTAIL
++#define MUSTTAIL [[gnu::musttail]]
++#endif
++
+ namespace v8 {
+ namespace internal {
+ namespace wasm {
+@@ -900,25 +909,21 @@
+   using memory_offset64_t = traits::memory_offset64_t;
+ 
+  public:
++  // The members for particular types are folded into the templates, chosen
++  // at compile time: gcc takes no explicit specialization inside a class.
+   template <typename T>
+   static inline T Read(const uint8_t*& code) {
+     T res = base::ReadUnalignedValue<T>(reinterpret_cast<Address>(code));
+-    code += sizeof(T);
+-    return res;
+-  }
+-  template <>
+-  slot_offset_t Read<slot_offset_t>(const uint8_t*& code) {
+-    slot_offset_t res = base::ReadUnalignedValue<slot_offset_t>(
+-        reinterpret_cast<Address>(code));
+ #if V8_ENABLE_DRUMBRAKE_TRACING
+-    if (v8_flags.trace_drumbrake_compact_bytecode) {
+-      printf("Read slot_offset_t %d\n", res);
++    if constexpr (std::is_same_v<T, slot_offset_t>) {
++      if (v8_flags.trace_drumbrake_compact_bytecode) {
++        printf("Read slot_offset_t %d\n", res);
++      }
+     }
+ #endif  // V8_ENABLE_DRUMBRAKE_TRACING
+-    code += sizeof(slot_offset_t);
++    code += sizeof(T);
+     return res;
+   }
+-
+   template <bool MultiMem>
+   static inline uint32_t ReadMemoryIndex(const uint8_t*& code) {
+     if constexpr (MultiMem) {
+@@ -999,46 +1004,42 @@
+   template <typename T>
+   static inline void push(uint32_t*& sp, const uint8_t*& code,
+                           WasmInterpreterRuntime* wasm_runtime, T val) {
+-    slot_offset_t offset = Read<slot_offset_t>(code);
+-    base::WriteUnalignedValue<T>(reinterpret_cast<Address>(sp + offset), val);
++    if constexpr (std::is_same_v<T, WasmRef>) {
++      slot_offset_t offset = Read<slot_offset_t>(code);
++      uint32_t ref_stack_index = Read<int32_t>(code);
++      base::WriteUnalignedValue<uint64_t>(reinterpret_cast<Address>(sp + offset),
++                                          kSlotsZapValue);
++      wasm_runtime->StoreWasmRef(ref_stack_index, val);
+ #ifdef V8_ENABLE_DRUMBRAKE_TRACING
+-    if (v8_flags.trace_drumbrake_execution)
+-      wasm_runtime->TracePush<T>(offset * kSlotSize);
++      if (v8_flags.trace_drumbrake_execution)
++        wasm_runtime->TracePush<WasmRef>(offset * kSlotSize);
+ #endif  // V8_ENABLE_DRUMBRAKE_TRACING
+-  }
+-
+-  template <>
+-  inline void push(uint32_t*& sp, const uint8_t*& code,
+-                   WasmInterpreterRuntime* wasm_runtime, WasmRef ref) {
+-    slot_offset_t offset = Read<slot_offset_t>(code);
+-    uint32_t ref_stack_index = Read<int32_t>(code);
+-    base::WriteUnalignedValue<uint64_t>(reinterpret_cast<Address>(sp + offset),
+-                                        kSlotsZapValue);
+-    wasm_runtime->StoreWasmRef(ref_stack_index, ref);
++    } else {
++      slot_offset_t offset = Read<slot_offset_t>(code);
++      base::WriteUnalignedValue<T>(reinterpret_cast<Address>(sp + offset), val);
+ #ifdef V8_ENABLE_DRUMBRAKE_TRACING
+-    if (v8_flags.trace_drumbrake_execution)
+-      wasm_runtime->TracePush<WasmRef>(offset * kSlotSize);
++      if (v8_flags.trace_drumbrake_execution)
++        wasm_runtime->TracePush<T>(offset * kSlotSize);
+ #endif  // V8_ENABLE_DRUMBRAKE_TRACING
++    }
+   }
+ 
+   template <typename T>
+   static inline T pop(uint32_t*& sp, const uint8_t*& code,
+                       WasmInterpreterRuntime* wasm_runtime) {
+-    slot_offset_t offset = Read<slot_offset_t>(code);
++    if constexpr (std::is_same_v<T, WasmRef>) {
++      uint32_t ref_stack_index = Read<int32_t>(code);
+ #ifdef V8_ENABLE_DRUMBRAKE_TRACING
+-    if (v8_flags.trace_drumbrake_execution) wasm_runtime->TracePop();
++      if (v8_flags.trace_drumbrake_execution) wasm_runtime->TracePop();
+ #endif  // V8_ENABLE_DRUMBRAKE_TRACING
+-    return base::ReadUnalignedValue<T>(reinterpret_cast<Address>(sp + offset));
+-  }
+-
+-  template <>
+-  inline WasmRef pop(uint32_t*& sp, const uint8_t*& code,
+-                     WasmInterpreterRuntime* wasm_runtime) {
+-    uint32_t ref_stack_index = Read<int32_t>(code);
++      return wasm_runtime->ExtractWasmRef(ref_stack_index);
++    } else {
++      slot_offset_t offset = Read<slot_offset_t>(code);
+ #ifdef V8_ENABLE_DRUMBRAKE_TRACING
+-    if (v8_flags.trace_drumbrake_execution) wasm_runtime->TracePop();
++      if (v8_flags.trace_drumbrake_execution) wasm_runtime->TracePop();
+ #endif  // V8_ENABLE_DRUMBRAKE_TRACING
+-    return wasm_runtime->ExtractWasmRef(ref_stack_index);
++      return base::ReadUnalignedValue<T>(reinterpret_cast<Address>(sp + offset));
++    }
+   }
+ 
+   template <typename T>

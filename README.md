@@ -28,7 +28,6 @@ bash build.sh hostgen     # 最初に一度: 生成するソース
 JOBS=14 bash build.sh v8  # V8
 JOBS=6 bash blink.sh all  # Blink
 bash rust.sh build && bash rust.sh merge   # Rustの部分
-bash ffmpeg.sh            # FFmpeg
 cd ../../../TessronOS/build_make
 make TARGET=_QEMU_VIRT_ DESKTOP=1 BROWSER=1 BROWSER_BLINK=1
 ```
@@ -38,5 +37,7 @@ make TARGET=_QEMU_VIRT_ DESKTOP=1 BROWSER=1 BROWSER_BLINK=1
 このリポジトリのファイルは、MITライセンス(`LICENSE`)で配布しています。取り込み先のTessronOSはT-License 2.2です。
 
 `tools/browser/patches`のパッチはChromiumのソースへの差分なので、Chromiumのライセンス(BSD 3条項)に従います。
+
+`tools/browser/spell`の英語の辞書(`en_US.aff`、`en_US.dic`)はSCOWLの単語の表から作られたもので、その許諾(`tools/browser/spell/COPYING`)に従います。
 
 ブラウザを組み込んだイメージには、Chromiumとその第三者コンポーネント、FFmpegなどが含まれます。その一覧と条件は、TessronOSの`THIRD_PARTY_NOTICES.md`にまとめています。

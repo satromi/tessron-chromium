@@ -1,0 +1,18 @@
+--- a/third_party/blink/renderer/core/html/media/picture_in_picture_interstitial.cc
++++ b/third_party/blink/renderer/core/html/media/picture_in_picture_interstitial.cc
+@@ -99,9 +99,12 @@
+   interstitial_timer_.StartOneShot(
+       kPictureInPictureStyleChangeTransitionDuration, FROM_HERE);
+ 
+-  DCHECK(GetVideoElement().CcLayer());
+-  GetVideoElement().CcLayer()->SetIsDrawable(false);
+-  GetVideoElement().CcLayer()->SetHitTestable(false);
++  // A video painted into the page's own record, as where no compositor
++  // takes its layer, has no layer to hide
++  if (GetVideoElement().CcLayer()) {
++    GetVideoElement().CcLayer()->SetIsDrawable(false);
++    GetVideoElement().CcLayer()->SetHitTestable(false);
++  }
+ }
+ 
+ void PictureInPictureInterstitial::Hide() {

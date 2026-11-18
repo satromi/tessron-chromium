@@ -1,0 +1,14 @@
+--- a/third_party/blink/renderer/core/paint/timing/element_timing_utils.cc
++++ b/third_party/blink/renderer/core/paint/timing/element_timing_utils.cc
+@@ -26,8 +26,10 @@
+                                                 ->FirstFragment()
+                                                 .LocalBorderBoxProperties(),
+                                             visual_rect);
++  // An embedder whose frames have no widget (TessronOS) draws at a device
++  // scale of 1, where Blink's space is the DIPs' already.
+   if (!frame->Client()->IsLocalFrameClientImpl()) {
+-    return gfx::RectF();
++    return visual_rect.Rect();
+   }
+   WebFrameWidgetImpl* widget =
+       WebLocalFrameImpl::FromFrame(frame)->LocalRootFrameWidget();

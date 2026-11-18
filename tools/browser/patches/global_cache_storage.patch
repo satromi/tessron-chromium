@@ -1,0 +1,18 @@
+--- a/third_party/blink/renderer/modules/cache_storage/global_cache_storage.cc
++++ b/third_party/blink/renderer/modules/cache_storage/global_cache_storage.cc
+@@ -40,13 +40,8 @@
+   }
+ 
+   if (!caches_) {
+-    if (&context->GetBrowserInterfaceBroker() ==
+-        &GetEmptyBrowserInterfaceBroker()) {
+-      exception_state.ThrowSecurityError(
+-          "Cache storage isn't available on detached context. No browser "
+-          "interface broker.");
+-      return nullptr;
+-    }
++    // The embedder answers the frames' interfaces through the empty broker
++    // (binders given to it), so a frame with that broker is not detached.
+     caches_ = MakeGarbageCollected<CacheStorage>(
+         context, GlobalFetch::ScopedFetcher::From(*context));
+   }

@@ -1,0 +1,10 @@
+--- a/third_party/angle/src/libANGLE/renderer/wgpu/FramebufferWgpu.cpp
++++ b/third_party/angle/src/libANGLE/renderer/wgpu/FramebufferWgpu.cpp
+@@ -10,7 +10,6 @@
+ #include "libANGLE/renderer/wgpu/FramebufferWgpu.h"
+ #include "common/unsafe_buffers.h"
+ 
+-#include <__config>
+ 
+ #include "common/Color.h"
+ #include "common/debug.h"

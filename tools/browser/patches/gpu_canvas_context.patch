@@ -1,0 +1,112 @@
+--- a/third_party/blink/renderer/modules/webgpu/gpu_canvas_context.cc
++++ b/third_party/blink/renderer/modules/webgpu/gpu_canvas_context.cc
+@@ -6,7 +6,9 @@
+ 
+ #include "base/metrics/histogram_functions.h"
+ #include "components/viz/common/resources/shared_image_format_utils.h"
++#include "gpu/command_buffer/client/client_shared_image.h"
+ #include "gpu/command_buffer/client/raster_interface.h"
++#include "gpu/command_buffer/client/webgpu_interface.h"
+ #include "gpu/config/gpu_finch_features.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_canvas_tone_mapping.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_canvas_tone_mapping_mode.h"
+@@ -16,7 +18,9 @@
+ #include "third_party/blink/renderer/bindings/modules/v8/v8_union_offscreen_rendering_context.h"
+ #include "third_party/blink/renderer/bindings/modules/v8/v8_union_rendering_context.h"
+ #include "third_party/blink/renderer/core/frame/web_feature.h"
++#include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
+ #include "third_party/blink/renderer/core/html/canvas/predefined_color_space.h"
++#include "third_party/blink/renderer/core/layout/layout_object.h"
+ #include "third_party/blink/renderer/core/imagebitmap/image_bitmap.h"
+ #include "third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.h"
+ #include "third_party/blink/renderer/modules/webgpu/dawn_conversions.h"
+@@ -43,6 +47,21 @@
+ 
+ namespace blink {
+ 
++// With no compositor to take the canvas's layer, the embedder may give the
++// page's paint the canvas's pixels: given the canvas, its WebGPU interface,
++// the shared image of its current texture (null between textures), the
++// device and that texture (the swap buffer's, as the client's handles),
++// it reads the texture back and returns its pixels, or the canvas's last
++// ones. It is told when the canvas goes away.
++MODULES_EXPORT sk_sp<SkImage> (*g_webgpu_canvas_snapshot)(
++    const void* canvas,
++    gpu::webgpu::WebGPUInterface* wgi,
++    const gpu::ClientSharedImage* si,
++    WGPUDevice device,
++    WGPUTexture texture,
++    SkAlphaType alpha) = nullptr;
++MODULES_EXPORT void (*g_webgpu_canvas_forget)(const void* canvas) = nullptr;
++
+ namespace {
+ 
+ bool IsContextFormatSupported(V8GPUTextureFormat::Enum format) {
+@@ -185,11 +204,17 @@
+ }
+ 
+ void GPUCanvasContext::Dispose() {
++  if (g_webgpu_canvas_forget) {
++    g_webgpu_canvas_forget(this);
++  }
+   resource_provider_.reset();
+   CanvasRenderingContext::Dispose();
+ }
+ 
+ scoped_refptr<StaticBitmapImage> GPUCanvasContext::GetImage() {
++  if (g_webgpu_canvas_snapshot) {
++    return PaintRenderingResultsToSnapshot(kBackBuffer);
++  }
+   if (!swap_buffers_) {
+     return nullptr;
+   }
+@@ -250,6 +275,31 @@
+     return resource_provider_ ? resource_provider_->Snapshot() : nullptr;
+   }
+ 
++  if (g_webgpu_canvas_snapshot) {
++    // What the page drew in this frame, read back by the embedder
++    if (copy_to_swap_texture_required_ && texture_ && !texture_->IsDestroyed() &&
++        swap_texture_) {
++      CopyToSwapTexture();
++    }
++    gpu::webgpu::WebGPUInterface* wgi = nullptr;
++    if (auto provider = GetContextProviderWeakPtr()) {
++      wgi = provider->ContextProvider().WebGPUInterface();
++    }
++    scoped_refptr<gpu::ClientSharedImage> si =
++        swap_buffers_->GetCurrentSharedImage();
++    WGPUTexture texture = nullptr;
++    if (swap_texture_ && !swap_texture_->IsDestroyed()) {
++      texture = swap_texture_->GetHandle().Get();
++    } else if (texture_ && !texture_->IsDestroyed()) {
++      texture = texture_->GetHandle().Get();
++    }
++    sk_sp<SkImage> image = g_webgpu_canvas_snapshot(
++        this, wgi, si.get(), device_->GetHandle().Get(), texture,
++        GetAlphaType());
++    return image ? UnacceleratedStaticBitmapImage::Create(std::move(image))
++                 : nullptr;
++  }
++
+   if (resource_provider_.get() &&
+       resource_provider_.get()->Size() != swap_buffers_->Size()) {
+     resource_provider_.reset();
+@@ -722,6 +772,17 @@
+   // "dirty", so always call DidDraw() when a new texture is created.
+   DidDraw(CanvasPerformanceMonitor::DrawType::kOther);
+ 
++  // With no compositor to take the canvas's layer, the embedder's paint
++  // draws the canvas into the page's record (g_webgpu_canvas_snapshot): a
++  // new texture is then a change of the page's paint, which is otherwise
++  // left to the layer (a composited canvas skips its paint invalidation).
++  if (g_webgpu_canvas_snapshot && !Host()->IsOffscreenCanvas()) {
++    if (LayoutObject* layout_object =
++            static_cast<HTMLCanvasElement*>(Host())->GetLayoutObject()) {
++      layout_object->SetShouldDoFullPaintInvalidation();
++    }
++  }
++
+   SkAlphaType alpha_type = GetAlphaType();
+   scoped_refptr<WebGPUMailboxTexture> mailbox_texture =
+       swap_buffers_->GetNewTexture(swap_texture_descriptor_, alpha_type);

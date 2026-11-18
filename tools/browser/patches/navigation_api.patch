@@ -1,0 +1,16 @@
+--- a/third_party/blink/renderer/core/navigation_api/navigation_api.cc
++++ b/third_party/blink/renderer/core/navigation_api/navigation_api.cc
+@@ -651,8 +651,11 @@
+       task_state_id = tracker->AsyncSameDocumentNavigationStarted();
+     }
+   }
+-  frame->GetLocalFrameHostRemote().NavigateToNavigationApiKey(
+-      key, LocalFrame::HasTransientUserActivation(frame),
++  // The embedder keeps the session history itself: the entry the key
++  // names is gone to by how far it is from the current one among the
++  // entries this document was given.
++  frame->Client()->NavigateBackForward(
++      keys_to_indices_.find(key)->value - current_entry_index_,
+       actual_navigation_start, task_state_id);
+   return api_method_tracker->GetNavigationResult();
+ }

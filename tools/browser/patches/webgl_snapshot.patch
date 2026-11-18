@@ -1,0 +1,88 @@
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+@@ -1668,6 +1668,17 @@
+   drawing_buffer_ = nullptr;
+ }
+ 
++// With no compositor to take the canvas's layer, the embedder may give the
++// snapshot of what the page drew as an image of a shared image of the GPU
++// process, copied there from the drawing buffer's colour buffer, which the
++// page's raster draws there without reading it back. Given the drawing
++// buffer, the buffer to copy and the context's alpha type, it returns null
++// when it cannot, and the snapshot is read back as before.
++MODULES_EXPORT scoped_refptr<StaticBitmapImage> (*g_webgl_gpu_snapshot)(
++    DrawingBuffer* drawing_buffer,
++    SourceDrawingBuffer source_buffer,
++    SkAlphaType alpha_type) = nullptr;
++
+ void WebGLRenderingContextBase::MarkContextChanged(
+     ContentChangeType change_type,
+     CanvasPerformanceMonitor::DrawType draw_type) {
+@@ -1697,6 +1708,16 @@
+   if (!canvas())
+     return;
+ 
++  // With no compositor to take the canvas's layer, the page's paint draws
++  // the canvas into the page's record, from the embedder's snapshot or from
++  // one read back: the first change after the frame it last drew (the
++  // snapshot resolves the drawing buffer) is a change of the page's paint,
++  // which is otherwise left to the layer (a composited canvas skips its
++  // paint invalidation).
++  if (LayoutObject* layout_object = canvas()->GetLayoutObject()) {
++    layout_object->SetShouldDoFullPaintInvalidation();
++  }
++
+   if (!marked_canvas_dirty_) {
+     marked_canvas_dirty_ = true;
+     if (auto* cc_layer = CcLayer())
+@@ -2068,6 +2089,27 @@
+     }
+   }
+ 
++  if (g_webgl_gpu_snapshot) {
++    scoped_refptr<StaticBitmapImage> image;
++    {
++      ScopedPixelLocalStorageInterrupt scoped_pls_interrupt(this);
++      ScopedTexture2DRestorer restorer(this);
++      ScopedFramebufferRestorer fbo_restorer(this);
++      if (GetDrawingBuffer()->ResolveAndBindForReadAndDraw()) {
++        image = g_webgl_gpu_snapshot(GetDrawingBuffer(), source_buffer,
++                                     GetAlphaType());
++      }
++    }
++    if (image) {
++      resource_provider_.reset();
++      cached_snapshot_ = std::move(image);
++      must_paint_to_canvas_ = false;
++      return cached_snapshot_;
++    }
++    // Read back as before, into a snapshot of its own
++    cached_snapshot_.reset();
++  }
++
+   CanvasNon2DResourceProvider* resource_provider =
+       GetSharedImageResourceProvider();
+   if (!resource_provider) {
+@@ -2078,13 +2120,15 @@
+     // top-left origin (the orientation that is used by
+     // `CanvasNon2DResourceProvider::Snapshot()` when it is not passed an
+     // orientation explicitly).
+-    if (!cached_snapshot_) {
+-      cached_snapshot_ = CopyRenderingResultsToUnacceleratedStaticBitmapImage(
+-          source_buffer, viz::SharedImageFormat::N32Format(),
+-          kPremul_SkAlphaType, kTopLeft_GrSurfaceOrigin);
+-    }
+-
+-    if (cached_snapshot_) {
++    // It is read back again whenever the drawing buffer changed since it
++    // was taken (a snapshot still current was returned above): without a
++    // resource provider it is what the page's paint draws at every frame.
++    // A read that fails keeps the snapshot before.
++    if (scoped_refptr<StaticBitmapImage> image =
++            CopyRenderingResultsToUnacceleratedStaticBitmapImage(
++                source_buffer, viz::SharedImageFormat::N32Format(),
++                kPremul_SkAlphaType, kTopLeft_GrSurfaceOrigin)) {
++      cached_snapshot_ = std::move(image);
+       // We successfully painted the canvas' contents.
+       must_paint_to_canvas_ = false;
+     }

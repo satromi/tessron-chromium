@@ -1,0 +1,26 @@
+--- a/gpu/command_buffer/service/transfer_buffer_manager.cc
++++ b/gpu/command_buffer/service/transfer_buffer_manager.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <stdint.h>
+ 
++#include <atomic>
+ #include <limits>
+ #include <memory>
+ 
+@@ -48,9 +49,15 @@
+       this);
+ }
+ 
++// The transfer buffers registered in this process, for the embedder's
++// console (a new one is mapped and its pages are touched for the first
++// time when it is written).
++std::atomic<int64_t> g_transfer_buffers_made{0};
++
+ bool TransferBufferManager::RegisterTransferBuffer(
+     int32_t id,
+     scoped_refptr<Buffer> buffer) {
++  g_transfer_buffers_made++;
+   if (id <= 0) {
+     DVLOG(0) << "Cannot register transfer buffer with non-positive ID.";
+     return false;

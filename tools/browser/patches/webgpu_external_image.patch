@@ -1,0 +1,27 @@
+--- a/third_party/blink/renderer/modules/webgpu/external_image_utils.cc
++++ b/third_party/blink/renderer/modules/webgpu/external_image_utils.cc
+@@ -559,6 +559,24 @@
+   // - Issue Dawn::queueCopyTextureForBrowser to upload contents from temp
+   // texture to dst texture.
+   // - Destroy all temp resources.
++  //
++  // An unaccelerated image may still hold a frame of a GPU texture (the
++  // embedder's snapshot of a WebGL canvas, which the page's raster draws
++  // with no readback): its pixels are read back here, as this path takes
++  // only pixels in memory.
++  if (paint_image.IsTextureBacked()) {
++    sk_sp<SkImage> pixels = paint_image.GetSwSkImage();
++    if (!pixels) {
++      return false;
++    }
++    unaccelerated_image = UnacceleratedStaticBitmapImage::Create(
++        std::move(pixels), image->Orientation());
++    image = unaccelerated_image.get();
++    paint_image = image->PaintImageForCurrentFrame();
++    image_source_copy_rect =
++        GetSourceImageSubrect(image, image->Rect(), origin, copy_size);
++    source_image_info = paint_image.GetSkImageInfo();
++  }
+   CHECK(!image->IsTextureBacked());
+   CHECK(!paint_image.IsTextureBacked());
+ 

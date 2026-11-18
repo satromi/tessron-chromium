@@ -1,0 +1,50 @@
+--- a/third_party/blink/renderer/core/fileapi/public_url_manager.cc
++++ b/third_party/blink/renderer/core/fileapi/public_url_manager.cc
+@@ -42,6 +42,7 @@
+ #include "third_party/blink/renderer/platform/blob/blob_url.h"
+ #include "third_party/blink/renderer/platform/blob/blob_url_null_origin_map.h"
+ #include "third_party/blink/renderer/platform/scheduler/main_thread/task_type_names.h"
++#include "base/functional/callback_helpers.h"
+ #include "third_party/blink/renderer/platform/weborigin/kurl.h"
+ #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
+ #include "third_party/blink/renderer/platform/wtf/casting.h"
+@@ -58,6 +59,14 @@
+ 
+ }  // namespace
+ 
++// An embedder that keeps the store of blob: URLs in this process on a thread
++// of its own (TessronOS) binds a window's store to it with a pipe of its
++// own: the frame's associated interfaces are answered on the window's own
++// thread, so a load the window waits for (a synchronous XMLHttpRequest of a
++// blob: URL) would wait for good for its URL to be registered and resolved.
++CORE_EXPORT void (*g_window_blob_url_store_hook)(
++    mojo::PendingReceiver<mojom::blink::BlobURLStore>) = nullptr;
++
+ PublicURLManager::PublicURLManager(ExecutionContext* execution_context)
+     : ExecutionContextLifecycleObserver(execution_context),
+       frame_url_store_(execution_context),
+@@ -69,6 +78,12 @@
+       return;
+     }
+ 
++    if (g_window_blob_url_store_hook) {
++      g_window_blob_url_store_hook(worker_url_store_.BindNewPipeAndPassReceiver(
++          execution_context->GetTaskRunner(TaskType::kFileReading)));
++      return;
++    }
++
+     frame->GetRemoteNavigationAssociatedInterfaces()->GetInterface(
+         frame_url_store_.BindNewEndpointAndPassReceiver(
+             execution_context->GetTaskRunner(TaskType::kFileReading)));
+@@ -169,7 +184,10 @@
+   mojo::PendingReceiver<mojom::blink::Blob> blob_receiver =
+       blob_remote.InitWithNewPipeAndPassReceiver();
+ 
+-  GetBlobURLStore().Register(std::move(blob_remote), url);
++  // Asked without waiting: where nothing answers for the store, a call
++  // that waits would hold the thread for good (the store's receiver is
++  // bound by a task of this same thread). The URL is made all the same.
++  GetBlobURLStore().Register(std::move(blob_remote), url, base::DoNothing());
+ 
+   mojo_urls_.insert(url_string);
+   blob->CloneMojoBlob(std::move(blob_receiver));

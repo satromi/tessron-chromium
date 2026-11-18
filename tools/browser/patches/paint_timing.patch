@@ -1,0 +1,51 @@
+--- a/third_party/blink/renderer/core/paint/timing/paint_timing.cc
++++ b/third_party/blink/renderer/core/paint/timing/paint_timing.cc
+@@ -15,6 +15,7 @@
+ #include "third_party/blink/public/web/web_performance_metrics_for_reporting.h"
+ #include "third_party/blink/renderer/core/dom/document.h"
+ #include "third_party/blink/renderer/core/dom/frame_request_callback_collection.h"
++#include "third_party/blink/renderer/core/frame/animation_frame_timing_monitor.h"
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/core/inspector/console_message.h"
+@@ -234,6 +235,10 @@
+     GetFrame()->OnFirstPaint(text_painted, image_painted);
+ }
+ 
++// The monitor of the animation frames of a frame's page, where the frame has
++// no widget (local_frame.cc)
++extern AnimationFrameTimingMonitor* (*g_frame_timing_monitor_hook)(LocalFrame&);
++
+ // https://w3c.github.io/paint-timing/#mark-paint-timing
+ void PaintTiming::MarkPaintTiming() {
+   // 2. Let paintTimingInfo be a new paint timing info, whose rendering update
+@@ -270,11 +275,10 @@
+   pending_paint_events_.clear();
+ 
+   FrameWidget* widget = GetFrame()->GetWidgetForLocalRoot();
+-  // Unit tests with a `callback_manager_` don't have a `widget`, but they rely
+-  // on getting presentation time feedback.
+-  if (!widget && !callback_manager_) {
+-    return;
+-  }
++  // A frame without a widget still gets presentation time feedback: the
++  // embedder's ChromeClient answers NotifyPresentationTime when the frame is
++  // shown (and unit tests use a `callback_manager_`); only the animation frame
++  // timing below needs the widget.
+ 
+   // 8. Let frameTimingInfo be document’s current frame timing info.
+   // 9. Set document’s current frame timing info to null.
+@@ -285,6 +289,13 @@
+           ? widget->RecordRenderingUpdateEndTime(
+                 last_rendering_update_end_time_)
+           : nullptr;
++  if (!widget && GetFrame()->IsLocalRoot() && g_frame_timing_monitor_hook) {
++    if (AnimationFrameTimingMonitor* monitor =
++            g_frame_timing_monitor_hook(*GetFrame())) {
++      frame_timing_info = monitor->RecordRenderingUpdateEndTime(
++          *GetFrame()->DomWindow(), last_rendering_update_end_time_);
++    }
++  }
+ 
+   if (paint_timing_record.paint_events.empty() && !frame_timing_info &&
+       !add_painted_images_element_timing_entries &&

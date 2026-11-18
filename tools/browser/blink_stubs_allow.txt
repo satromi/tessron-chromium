@@ -1,0 +1,3 @@
+# Names of the port that blink_stubs.py lets stay undefined (and so get a
+# stand-in that does nothing). One per line, as nm prints it, then the
+# reason after a '#'. Empty: no name of the port is left undefined today.

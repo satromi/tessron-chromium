@@ -19,6 +19,13 @@
  *	The drawing buffer's colour buffers come through shared images, so a
  *	small SharedImageInterface maps mailboxes to the textures behind
  *	them.
+ *
+ *	A renderbuffer may be multisampled (4 samples, the rotated grid of
+ *	br_glsl's kSamplePos): its store keeps every sample, a triangle
+ *	covers the samples inside it, the fragment shader runs once a
+ *	pixel, and a blit (or a read) to a framebuffer of one sample
+ *	averages them. The drawing buffer asked for antialias draws so
+ *	(GL_CHROMIUM_framebuffer_multisample, its explicit resolve).
  */
 
 #include <stdio.h>
@@ -74,7 +81,8 @@ struct BrRb {
   GLenum fmt = 0;
   int w = 0;
   int h = 0;
-  std::vector<unsigned char> px;  // only for color formats
+  int samples = 1;                // 1, or brgl::kMaxSamples
+  std::vector<unsigned char> px;  // only for color formats, samples per pixel
 };
 
 struct BrFb {
@@ -213,7 +221,8 @@ class BrGLES2 final : public gpu::gles2::GLES2InterfaceStub {
 
   // ---- state ----
   GLenum error_ = 0;  // GL_NO_ERROR
-  GLuint bound_fb_ = 0;
+  GLuint bound_fb_ = 0;       // the draw framebuffer
+  GLuint read_fb_ = 0;        // the read framebuffer (blits and reads)
   GLuint bound_rb_ = 0;
   GLuint bound_array_buf_ = 0;
   GLuint bound_element_buf_ = 0;
@@ -239,11 +248,21 @@ class BrGLES2 final : public gpu::gles2::GLES2InterfaceStub {
   float clear_depth_ = 1.0f;
   std::map<GLuint, std::vector<float>> depth_;  // per framebuffer
 
-  float* DepthFor(int w, int h) {
+  float* DepthFor(int w, int h, int samples = 1) {
     std::vector<float>& d = depth_[bound_fb_];
-    if ((int)d.size() != w * h)
-      d.assign((size_t)w * h, 1.0f);
+    if ((int)d.size() != w * h * samples)
+      d.assign((size_t)w * h * samples, 1.0f);
     return d.data();
+  }
+
+  // The samples of a pixel of the framebuffer |fb|'s colour store
+  int SamplesOf(GLuint fb) {
+    if (fb == 0)
+      return 1;
+    auto it = fb_.find(fb);
+    if (it == fb_.end() || it->second.color_rb == 0)
+      return 1;
+    return rb_[it->second.color_rb].samples;
   }
 
   void SetError(GLenum e) {
@@ -263,8 +282,11 @@ class BrGLES2 final : public gpu::gles2::GLES2InterfaceStub {
   // by blink (DrawingBuffer always binds its own), so id 0 maps to a tiny
   // placeholder.
   bool ColorStore(unsigned char** px, int* w, int* h) {
+    return ColorStoreOf(bound_fb_, px, w, h);
+  }
+  bool ColorStoreOf(GLuint fbid, unsigned char** px, int* w, int* h) {
     static BrTex fb0;
-    if (bound_fb_ == 0) {
+    if (fbid == 0) {
       if (fb0.px.empty()) {
         fb0.w = 1;
         fb0.h = 1;
@@ -275,7 +297,7 @@ class BrGLES2 final : public gpu::gles2::GLES2InterfaceStub {
       *h = fb0.h;
       return true;
     }
-    BrFb& f = fb_[bound_fb_];
+    BrFb& f = fb_[fbid];
     if (f.color_tex != 0) {
       BrTex& t = tex_[f.color_tex];
       if (t.px.empty())
@@ -358,8 +380,11 @@ class BrGLES2 final : public gpu::gles2::GLES2InterfaceStub {
     else if (target == 0x8893 /* ELEMENT_ARRAY_BUFFER */)
       bound_element_buf_ = buffer;
   }
-  void BindFramebuffer(GLenum, GLuint framebuffer) override {
-    bound_fb_ = framebuffer;
+  void BindFramebuffer(GLenum target, GLuint framebuffer) override {
+    if (target != 0x8CA8 /* READ_FRAMEBUFFER */)
+      bound_fb_ = framebuffer;
+    if (target != 0x8CA9 /* DRAW_FRAMEBUFFER */)
+      read_fb_ = framebuffer;
     if (framebuffer != 0 && fb_.find(framebuffer) == fb_.end())
       fb_[framebuffer] = BrFb();
   }
@@ -431,10 +456,67 @@ class BrGLES2 final : public gpu::gles2::GLES2InterfaceStub {
     r.fmt = internalformat;
     r.w = width;
     r.h = height;
+    r.samples = 1;
     if (IsColorRenderbufferFormat(internalformat))
       r.px.assign((size_t)width * height * 4, 0);
     else
       r.px.clear();
+  }
+  void RenderbufferStorageMultisampleCHROMIUM(GLenum target, GLsizei samples,
+                                              GLenum internalformat,
+                                              GLsizei width,
+                                              GLsizei height) override {
+    RenderbufferStorage(target, internalformat, width, height);
+    if (bound_rb_ == 0 || samples <= 1)
+      return;
+    BrRb& r = rb_[bound_rb_];
+    r.samples = brgl::kMaxSamples;
+    if (!r.px.empty())
+      r.px.assign((size_t)width * height * 4 * r.samples, 0);
+  }
+  void RenderbufferStorageMultisampleEXT(GLenum target, GLsizei samples,
+                                         GLenum internalformat, GLsizei width,
+                                         GLsizei height) override {
+    RenderbufferStorageMultisampleCHROMIUM(target, samples, internalformat,
+                                           width, height);
+  }
+
+  // The read framebuffer's colour into the draw framebuffer's: the samples
+  // of a multisampled one averaged (the resolve), a plain one copied
+  void BlitFramebufferCHROMIUM(GLint sx0, GLint sy0, GLint sx1, GLint sy1,
+                               GLint dx0, GLint dy0, GLint dx1, GLint dy1,
+                               GLbitfield mask, GLenum) override {
+    if ((mask & 0x00004000 /* COLOR_BUFFER_BIT */) == 0)
+      return;
+    unsigned char *spx, *dpx;
+    int sw, sh, dw, dh;
+    if (!ColorStoreOf(read_fb_, &spx, &sw, &sh) ||
+        !ColorStoreOf(bound_fb_, &dpx, &dw, &dh))
+      return;
+    int ss = SamplesOf(read_fb_), ds = SamplesOf(bound_fb_);
+    int w = sx1 - sx0, h = sy1 - sy0;
+    if (w <= 0 || h <= 0 || dx1 - dx0 != w || dy1 - dy0 != h)
+      return;
+    for (int row = 0; row < h; ++row) {
+      // GL's rows count from the bottom; the stores' row 0 is the top
+      int sy = sh - 1 - (sy0 + row), dy = dh - 1 - (dy0 + row);
+      if (sy < 0 || sy >= sh || dy < 0 || dy >= dh)
+        continue;
+      for (int col = 0; col < w; ++col) {
+        int sx = sx0 + col, dx = dx0 + col;
+        if (sx < 0 || sx >= sw || dx < 0 || dx >= dw)
+          continue;
+        const unsigned char* sp = spx + ((size_t)sy * sw + sx) * ss * 4;
+        unsigned sum[4] = {0, 0, 0, 0};
+        for (int k = 0; k < ss; ++k)
+          for (int i = 0; i < 4; ++i)
+            sum[i] += sp[k * 4 + i];
+        unsigned char* dp = dpx + ((size_t)dy * dw + dx) * ds * 4;
+        for (int k = 0; k < ds; ++k)
+          for (int i = 0; i < 4; ++i)
+            dp[k * 4 + i] = (unsigned char)((sum[i] + ss / 2) / ss);
+      }
+    }
   }
 
   // ---- framebuffer wiring ----
@@ -655,9 +737,10 @@ class BrGLES2 final : public gpu::gles2::GLES2InterfaceStub {
     int w, h;
     if (!ColorStore(&px, &w, &h))
       return;
+    const int ns = SamplesOf(bound_fb_);
     if ((mask & 0x00000100 /* DEPTH_BUFFER_BIT */) != 0) {
-      float* d = DepthFor(w, h);
-      for (int i = 0; i < w * h; ++i)
+      float* d = DepthFor(w, h, ns);
+      for (int i = 0; i < w * h * ns; ++i)
         d[i] = clear_depth_;
     }
     if ((mask & 0x00004000 /* COLOR_BUFFER_BIT */) == 0)
@@ -677,10 +760,12 @@ class BrGLES2 final : public gpu::gles2::GLES2InterfaceStub {
       y1 = scissor_[1] + scissor_[3] < h ? scissor_[1] + scissor_[3] : h;
     }
     for (int y = y0; y < y1; ++y) {
-      unsigned char* row = px + ((size_t)y * w + x0) * 4;
+      unsigned char* row = px + ((size_t)y * w + x0) * 4 * ns;
       for (int x = x0; x < x1; ++x) {
-        memcpy(row, c, 4);
-        row += 4;
+        for (int k = 0; k < ns; ++k) {
+          memcpy(row, c, 4);
+          row += 4;
+        }
       }
     }
   }
@@ -692,8 +777,9 @@ class BrGLES2 final : public gpu::gles2::GLES2InterfaceStub {
       return;
     unsigned char* px;
     int w, h;
-    if (!ColorStore(&px, &w, &h))
+    if (!ColorStoreOf(read_fb_, &px, &w, &h))
       return;
+    const int ns = SamplesOf(read_fb_);
     unsigned char* out = (unsigned char*)pixels;
     for (GLsizei row = 0; row < height; ++row) {
       for (GLsizei col = 0; col < width; ++col) {
@@ -704,7 +790,13 @@ class BrGLES2 final : public gpu::gles2::GLES2InterfaceStub {
         if (sx < 0 || sx >= w || sy < 0 || sy >= h) {
           memset(dst, 0, 4);
         } else {
-          memcpy(dst, px + ((size_t)sy * w + sx) * 4, 4);
+          const unsigned char* sp = px + ((size_t)sy * w + sx) * ns * 4;
+          for (int i = 0; i < 4; ++i) {
+            unsigned sum = 0;
+            for (int k = 0; k < ns; ++k)
+              sum += sp[k * 4 + i];
+            dst[i] = (unsigned char)((sum + ns / 2) / ns);
+          }
         }
       }
     }
@@ -971,8 +1063,9 @@ class BrGLES2 final : public gpu::gles2::GLES2InterfaceStub {
     brgl::DrawTarget tgt;
     if (!ColorStore(&tgt.color, &tgt.w, &tgt.h))
       return;
+    tgt.samples = SamplesOf(bound_fb_);
     if (depth_test_)
-      tgt.depth = DepthFor(tgt.w, tgt.h);
+      tgt.depth = DepthFor(tgt.w, tgt.h, tgt.samples);
     brgl::DrawParams dp;
     dp.mode = (int)mode;
     dp.first = first;
@@ -1061,17 +1154,25 @@ class BrGLES2 final : public gpu::gles2::GLES2InterfaceStub {
   }
   const GLubyte* GetString(GLenum name) override {
     switch (name) {
+      /*
+       * what WEBGL_debug_renderer_info tells (UNMASKED_VENDOR_WEBGL,
+       * UNMASKED_RENDERER_WEBGL), in the form Chrome gives every renderer
+       * in: the vendor in brackets after Chrome's own, the device and the
+       * API in ANGLE's
+       */
       case 0x1F00: /* VENDOR */
-        return (const GLubyte*)"TessronOS";
+        return (const GLubyte*)"Google Inc. (TessronOS)";
       case 0x1F01: /* RENDERER */
-        return (const GLubyte*)"TessronOS software GL";
+        return (const GLubyte*)"ANGLE (TessronOS, TessronOS software GL, OpenGL ES 2.0)";
+      /* the versions a browser's GPU command buffer says */
       case 0x1F02: /* VERSION */
-        return (const GLubyte*)"OpenGL ES 2.0 (TessronOS)";
+        return (const GLubyte*)"OpenGL ES 2.0 Chromium";
       case 0x8B8C: /* SHADING_LANGUAGE_VERSION */
-        return (const GLubyte*)"OpenGL ES GLSL ES 1.0 (TessronOS)";
+        return (const GLubyte*)"OpenGL ES GLSL ES 1.0 Chromium";
       case 0x1F03: /* EXTENSIONS */
         return (const GLubyte*)
-            "GL_OES_packed_depth_stencil GL_OES_rgb8_rgba8 GL_OES_depth24";
+            "GL_OES_packed_depth_stencil GL_OES_rgb8_rgba8 GL_OES_depth24 "
+            "GL_CHROMIUM_framebuffer_multisample";
       default:
         return (const GLubyte*)"";
     }
@@ -1124,8 +1225,13 @@ class BrGLES2 final : public gpu::gles2::GLES2InterfaceStub {
         *params = 8;
         break;
       case 0x80A8: /* SAMPLE_BUFFERS */
+        *params = SamplesOf(bound_fb_) > 1 ? 1 : 0;
+        break;
       case 0x80A9: /* SAMPLES */
-        *params = 0;
+        *params = SamplesOf(bound_fb_) > 1 ? SamplesOf(bound_fb_) : 0;
+        break;
+      case 0x8D57: /* MAX_SAMPLES */
+        *params = brgl::kMaxSamples;
         break;
       case 0x8B9A: /* IMPLEMENTATION_COLOR_READ_TYPE */
         *params = 0x1401; /* UNSIGNED_BYTE */
@@ -1326,7 +1432,12 @@ class BrGLProvider final : public blink::WebGraphicsContext3DProvider {
  public:
   BrGLProvider() : sii_(&gl_) {
     caps_.max_texture_size = 2048;
-    prefs_.anti_aliasing_mode = blink::kAntialiasingModeNone;
+    /*
+     * antialias when the page asks for it (the default), resolved
+     * explicitly: the multisampled renderbuffer blitted
+     */
+    prefs_.anti_aliasing_mode = blink::kAntialiasingModeUnspecified;
+    prefs_.msaa_sample_count = brgl::kMaxSamples;
   }
 
   gpu::InterfaceBase* InterfaceBase() override { return &gl_; }

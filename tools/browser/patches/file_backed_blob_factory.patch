@@ -1,0 +1,18 @@
+--- a/third_party/blink/renderer/core/fileapi/file_backed_blob_factory_dispatcher.cc	2026-10-07 22:54:40.973192336 +0900
++++ b/third_party/blink/renderer/core/fileapi/file_backed_blob_factory_dispatcher.cc	2026-10-07 22:54:40.988366633 +0900
+@@ -112,9 +112,12 @@
+   }
+ 
+   if (auto* window = DynamicTo<LocalDOMWindow>(execution_context)) {
+-    if (auto* frame = window->GetFrame()) {
+-      return blink::GetFileBackedBlobFactory(frame_remote_, execution_context,
+-                                             frame);
++    if (window->GetFrame()) {
++      // An embedder with no browser process (TessronOS) answers the factory
++      // through the frame's broker, on a thread of its own: a page that asks
++      // a file's Blob synchronously right after making it does not wait on
++      // its own thread, where the frame's associated interfaces are bound.
++      return blink::GetFileBackedBlobFactory(worker_remote_, execution_context);
+     } else {
+       return nullptr;
+     }

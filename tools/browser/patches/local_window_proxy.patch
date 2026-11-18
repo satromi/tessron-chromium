@@ -1,0 +1,16 @@
+--- a/third_party/blink/renderer/bindings/core/v8/local_window_proxy.cc
++++ b/third_party/blink/renderer/bindings/core/v8/local_window_proxy.cc
+@@ -373,9 +373,10 @@
+                GetFrame()->IsMainFrame(), "IsOutermostMainFrame",
+                GetFrame()->IsOutermostMainFrame());
+ 
+-  if (context_was_created_from_snapshot_) {
+-    V8ContextSnapshot::InstallContextIndependentProps(script_state_);
+-  }
++  // Also for a context made from the templates: the snapshot's types' runtime-
++  // enabled properties are then installed here when the templates were made
++  // without them (the main world of a build without a context snapshot).
++  V8ContextSnapshot::InstallContextIndependentProps(script_state_);
+ 
+   // Runtime feature states must be inherited from the opener BEFORE the
+   // unconditional Window wrapper warmup compilation below so that non-snapshot

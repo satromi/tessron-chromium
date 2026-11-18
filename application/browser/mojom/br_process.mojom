@@ -1,0 +1,657 @@
+// TessronOS
+// Copyright (C) 2026 satromi
+// This software is distributed under the MIT License (LICENSE).
+
+// The browser and its renderers (design 14.13): the browser's process
+// keeps the windows, the input, the converter, the menus, the panels and
+// the session history; a renderer's process runs Blink and V8 for the
+// pages of one site, with the GPU of its own; the network process holds
+// the one network stack and what it keeps. They speak over stream pairs
+// (socketpair) through Mojo.
+//
+// A renderer takes its pages' turns at its own time and tells what came
+// of them (FrameSink). The browser's calls of Renderer and Page are not
+// synchronous, even those that need an answer: the browser waits for the
+// answer in its engine thread's loop, so that the renderer's main thread
+// is never woken in a wait of its own (for the network, the browser) to
+// take one inside a script, a frame callback or a layout.
+
+module br.mojom;
+
+struct Rect {
+  int32 x;
+  int32 y;
+  int32 w;
+  int32 h;
+};
+
+// A window a page opened that keeps its opener: a page of the same
+// renderer, where and how large it asked to be (-1 where it did not say).
+struct OpenedPage {
+  pending_remote<Page> page;
+  int32 x;
+  int32 y;
+  int32 w;
+  int32 h;
+  bool pip;
+};
+
+// What a page asked of a video's picture-in-picture window (BrPipAsk):
+// open one for a player, show another player in it, or close it.
+struct PipAsk {
+  int32 what;
+  int32 session;
+  int32 player;
+  int32 w;
+  int32 h;
+};
+
+// What the browser keeps of a page after each call.
+struct PageState {
+  bool repaint;               // Pump: the page is to be laid out and shown again
+  string title;
+  string url;                 // the document's address as the page has it
+  string hover;               // the link or the tooltip under the pointer
+  array<string> navigation;   // addresses the page asked to go to, in turn
+  bool nav_post;              // the last of them goes with a form's body
+  string nav_method;
+  string nav_ctype;
+  string nav_body;
+  int32 fullscreen_asked;     // BR_FS_*, once
+  int32 window_asked;         // BR_WIN_*, once
+  bool close_asked;
+  array<OpenedPage> opened;
+  array<string> apart;        // addresses to open with no opener
+  int32 idle_ms;
+  int32 scroll_top;
+  int32 doc_width;
+  int32 doc_height;            // the whole page's height as last laid out (Layout's answer too)
+  bool beforeunload;          // a document of the page has a beforeunload handler (MayLeave is asked then)
+  // The page's session history entries (as HistoryState answers), given
+  // when they may have changed (its address or where it is among them):
+  // the browser keeps them, and does not ask a page held in its script.
+  bool hist_given;
+  array<string> hist_states;
+  array<string> hist_urls;
+  int32 hist_at;
+  int32 scroll_left;
+  bool editable;
+  bool can_back;
+  bool can_forward;
+  string dragging;
+  string badge;               // navigator.setAppBadge, before the title
+  string capture;             // while the page shares the screen
+  string origin;              // the page's main frame's
+  bool isolated;              // the origin is let act as an isolated web app
+  array<string> ext_actions;  // the extensions' buttons, for the window's menu
+  array<PipAsk> pip;          // the renderer's picture-in-picture windows asked for, in turn
+  bool wv_busy;               // Widevine is being installed
+  bool wv_installed;          // and is there
+};
+
+// The window's place and the screen, given with each turn, each layout
+// and each change of full screen, which the page's window.screenX and
+// screen.width read.
+struct Turn {
+  bool has_window;
+  int32 win_x;
+  int32 win_y;
+  int32 win_w;
+  int32 win_h;
+  int32 screen_w;
+  int32 screen_h;
+};
+
+struct ContextAt {
+  bool took;
+  string link;
+  string image;
+  string selection;
+  bool editable;
+  array<string> ext_items;    // what the extensions added to the menu for what is there
+};
+
+struct DropFile {
+  string path;
+  string name;
+};
+
+// A navigation the browser asks a renderer to fetch and show: what the
+// address field, a link or the history named.
+struct Navigation {
+  string target;
+  int32 how;                  // BR_LOAD_*
+  string method;
+  string ctype;
+  string body;
+  string from;                // the page that asked, "" when the user did
+  bool upgraded;              // typed with no scheme: https first, then http
+  array<string> restore;      // a run's entries kept by the browser (page states), for a new renderer
+  int32 restore_at;           // the one of them gone to
+  uint32 seq;                 // the browser's number for it, which a StopLoad for it names
+};
+
+struct NavResult {
+  int32 outcome;              // NAV_*: shown, failed (an error page shown), stopped, saved
+  string url;
+  int32 status;
+  int64 bytes;
+  string error;
+  string title;
+};
+
+// One page of a renderer.
+interface Page {
+  // The pixels the page is painted into, which the browser puts in its
+  // window: 'w' x 'h', N32, a row of 'pitch' bytes.
+  SetCanvas(handle<shared_buffer> pixels, int32 w, int32 h, int32 pitch) => (bool ok);
+
+  Load(string url, string body, string charset, string type) => (PageState state);
+  Navigate(Navigation nav) => (NavResult result, PageState state);
+  Layout(int32 width, Turn turn) => (int32 height, PageState state);
+  // The window's place and the screen, told when they change (the
+  // renderer's pages take their turns by themselves: what comes of them
+  // comes on FrameSink).
+  Window(Turn turn);
+
+  // The frames (FrameSink): the page's renderer draws each into the
+  // page's memory (SetCanvas) at its own time, the end of a turn that made
+  // one, and tells the rectangles once. It does not draw into the memory
+  // again until the browser has copied them out and said so (FrameDone),
+  // so the browser never reads pixels being written. View says which part
+  // of the page the window shows (its top, its height); Redraw asks for
+  // the whole of it in the next frame.
+  Frames(pending_remote<FrameSink> sink);
+  View(int32 top, int32 height);
+  Redraw();
+  FrameDone();
+  LinkAt(int32 x, int32 y) => (string link);
+  FirstLink() => (string link);
+  HistoryGo(int32 offset) => (int32 result, PageState state);
+  HistoryState() => (array<string> states, array<string> urls, int32 at);
+  HistoryCut();
+  LoadAs(int32 how);
+  Response(int32 status, string headers, string protocol);
+  MayLeave(bool reload) => (bool ok);
+  Zoom(double factor);
+  FullscreenDone(bool full, Turn turn);
+  Context(int32 x, int32 y) => (ContextAt at, PageState state);
+  Edit(string command);
+  SaveUrl(string url);
+  Find(string text, int32 step) => (int32 count, int32 active);
+  Click(int32 x, int32 y) => (bool took, PageState state);
+  Print() => (bool ok);
+  Drop(int32 x, int32 y, array<DropFile> files, string text, uint32 mods)
+      => (bool took, PageState state);
+  DragAway(bool taken);
+  // The pointer, the wheel, the scroll, the converter's text: told, and
+  // what comes of them comes with the page's next state (FrameSink.State).
+  Mouse(int32 type, int32 x, int32 y, int32 button, uint32 mods);
+  Key(uint32 usage, uint32 mods, uint32 ch) => (bool took, PageState state);
+  Wheel(int32 x, int32 y, int32 right, int32 down);
+  SetScrollLeft(int32 x);
+  Compose(string text, array<int32> clauses, int32 target, int32 caret);
+  Commit(string text);
+  Caret() => (bool shown, int32 x, int32 y, int32 h);
+  Memory(bool collect) => (string what);
+  RunScript(string url);
+  OpenPage(string url) => (PageState state);
+  Closed() => ();
+
+  // The window's GPU buffers (the GPU process's section below): the
+  // shared images of the two BOs the window is shown from, 'w' x 'h', of
+  // the GPU process 'gpu_pid', under the browser's number 'set'. The
+  // page's frames are rastered into them in turn (FrameSink.GsurfFrame)
+  // while its renderer rasters on a channel to that process, and into the
+  // page's memory (Frame) while it does not. None: they are taken away,
+  // and the frames go into the page's memory again.
+  SetGsurf(array<GsurfImage> images, int32 w, int32 h, int32 gpu_pid, int32 set) => (bool ok);
+};
+
+// What a renderer is asked as a whole.
+interface Renderer {
+  // Blink and V8 brought up, so that the first page comes at once (a
+  // renderer kept ready).
+  Prepare() => (bool ok);
+  // The window's page of this renderer, its window's UUID with it.
+  CreatePage(pending_receiver<Page> page, array<uint8, 16> window) => (bool ok);
+  // A command of the menu or of a test that the engine's side carries
+  // out (an extension's button, 〈メディア〉, Widevine...): what came of it
+  // for the message line, "" for nothing.
+  Command(string code) => (string said);
+  // What a test or the menu reads of the engine's side, by name.
+  Query(string what) => (string value);
+  // What it keeps written (cookies, storage), before another renderer
+  // reads it or this one is closed.
+  FlushStores(int32 wait_ms) => (bool done);
+
+  // A video's picture-in-picture window: closed by the user, pressed
+  // (play, or pause), the pixels its player's frame is drawn into, the
+  // frame drawn there, and whether the player is paused and how many
+  // frames it has shown.
+  PipClosed(int32 session) => ();
+  PipPress(int32 session, bool play) => ();
+  PlayerCanvas(int32 session, handle<shared_buffer> pixels, int32 w, int32 h, int32 pitch)
+      => (bool ok);
+  PaintPlayer(int32 session, int32 player) => (bool ok);
+  PlayerState(int32 player) => (bool paused, int64 frames);
+
+  // A real object let go over the page, kept as a file the page reads
+  // (br_file_keep): its bytes in 'bytes', 'size' of them; the path.
+  KeepFile(string uuid, string name, handle<shared_buffer> bytes, uint64 size) => (string path);
+};
+
+// What the settings window and the extensions' panels read and change of
+// what the renderer keeps (passwords, passkeys, extensions, the sites'
+// data, downloads): an operation by name, its argument and its answer as
+// JSON. A pipe of its own, called from a thread of the browser's that
+// is not the engine thread, so that the windows never wait for that one.
+interface Data {
+  [Sync] Ask(string op, string arg) => (string result);
+};
+
+// A page's frames, from its renderer: the rectangles of the view (its
+// top, its height) drawn anew into the page's memory, which is the
+// browser's to read until it says FrameDone.
+interface FrameSink {
+  Frame(array<Rect> rects, int32 top, int32 height);
+  // What the page is after a turn of its own or an input, when it is
+  // other than last told (or something happened: a navigation asked, a
+  // window opened).
+  State(PageState state);
+  // A frame rastered into the window's GPU buffer 'buf' of the set 'set'
+  // (Page.SetGsurf), once the GPU process has taken in its commands: the
+  // rectangles changed since the frame before, which the window shows.
+  // The renderer draws into neither buffer again until FrameDone, which
+  // the browser says once the window shows this one.
+  GsurfFrame(array<Rect> rects, int32 top, int32 height, int32 set, int32 buf);
+};
+
+// From the browser's window thread while its engine thread waits in a
+// call: carried on the renderer's IO thread, so that a script holding
+// the renderer's main thread can be stopped.
+interface Control {
+  StopScript();
+  ReportScript();
+  // The load stops (now: what is under way is cut too). 'seq' names the
+  // navigation it is for (Navigation.seq), 0 whatever loads: one for a
+  // navigation that comes before the navigation has begun on the main
+  // thread is kept for it, not cleared as it begins.
+  StopLoad(bool now, uint32 seq);
+  // The window goes, or the renderer is let go: it ends.
+  Closing();
+  // For how long the main thread has been in its work without coming
+  // back to its wait (0: it waits). Answered on the IO thread, so it
+  // comes even while a script holds the main thread; the caller may be
+  // a thread of no sequence (the window's), hence no interrupt.
+  [Sync, NoInterrupt] Busy() => (int64 ms);
+  // The network process was started again: the renderer's ways to it from
+  // now on, to the network and to the stores (what was under way on the
+  // old one has failed).
+  NetworkAgain(pending_remote<Network> network, pending_remote<Store> store);
+};
+
+// What a renderer asks of the browser, which shows the panels over its
+// window. Any of the renderer's threads may ask.
+interface Host {
+  [Sync] AskPage(int32 kind, string message, string deflt) => (bool ok, string answer);
+  [Sync] AskPermission(string origin, string what) => (bool given);
+  [Sync] Choose(array<string> names, int32 chosen) => (int32 index);
+  [Sync] ChooseObjects(bool multiple) => (bool ok, array<array<uint8, 16>> ids, array<string> names);
+  [Sync] PickColor() => (bool ok, uint32 color);
+  [Sync] ShareChoose(string origin, bool audio, bool no_system_audio, bool own_audio_out,
+                     bool no_self, bool no_screen, int32 prefer)
+      => (bool ok, int32 kind, int32 wid, uint32 serial, string name, bool with_audio,
+          int32 mon_mode, int32 mon_pid, int32 screen, string output_name, uint32 output_ident,
+          int32 sx, int32 sy, int32 sw, int32 sh);
+  // The rectangle in the view of the screen a share chose (br_share_screen_rect),
+  // as the screens are now: none when it has gone.
+  [Sync] ShareScreenRect(int32 screen, string output_name, uint32 output_ident)
+      => (bool there, int32 x, int32 y, int32 w, int32 h);
+  // How much of the page being fetched has come; whether it is to stop.
+  [Sync] Progress(int64 got, int64 total) => (bool stop);
+  // A command for the browser's loop (br_main_command).
+  [Sync] MainCommand(string code) => ();
+  // The panel of 〈拡張機能を読み込む〉.
+  [Sync] ExtAskLoad() => ();
+  // An address or a card for a form of 'origin', chosen on the browser's
+  // panel from what the browser keeps: the fields of the one chosen alone.
+  [Sync] AutofillChoose(bool card, string origin) => (bool ok, array<string> fields);
+  // What a page makes and saves (a Blob, a data: URL) under 'name': the
+  // bytes, 'size' of them, handed to the browser, which keeps the
+  // downloads (ブラウザの保存箱, the tray, the list); 'taken' once it has
+  // them, so that the renderer may end before they are written.
+  [Sync] KeepDownload(string name, handle<shared_buffer> bytes, uint64 size) => (bool taken);
+  // A download from the network handed over at its response (a
+  // navigation's answer that is not shown, a link with the download
+  // attribute): the bytes that came before it was handed over, and the
+  // request itself ('rest', the pipe its network process answers on),
+  // whose pieces the browser takes in as they come; none when the whole
+  // answer had come ('ended', 'ok' whether it came well). 'taken' once
+  // the browser has it, so that the renderer may end at once.
+  [Sync] Download(DownloadHead head, array<uint8> first, bool ended, bool ok,
+                  pending_receiver<NetFetchClient>? rest) => (bool taken);
+  // A channel to the GPU process; while it is being started the answer
+  // waits for it (10 seconds at most), null when there is none.
+  [Sync] GpuChannel() => (GpuChannelInfo? channel);
+};
+
+// The pipes a renderer is started with, by the invitation's names: small
+// integers, which Mojo takes as the attachments' indices (a name of
+// another form is the one attachment of its invitation).
+const uint64 kRendererPipe = 0;
+const uint64 kControlPipe = 1;
+const uint64 kHostPipe = 2;
+const uint64 kDataPipe = 3;
+const uint64 kNetworkPipe = 4;
+const uint64 kStorePipe = 5;
+
+// ---------------------------------------------------------------- the network process
+
+// The network process holds the browser's one network stack: its
+// connections, the cookie jar, the HTTP cache, QUIC's sessions, the
+// names looked up and the hosts that asked for HTTPS, and the stores
+// they are kept in between runs. Each renderer has a pipe of its own to
+// it (Network), given with its invitation; the browser has one to start
+// the others (NetworkService).
+
+// A redirect a request followed.
+struct NetRedirect {
+  string url;
+  int32 status;
+  string headers;
+  string new_url;
+  string new_method;
+  string new_referrer;
+};
+
+// What a request came to: its response (status, address after the
+// redirects, header lines, Content-Type, reason phrase, protocol) and,
+// when it failed, the network stack's error.
+struct NetAnswer {
+  bool ok;
+  int32 status;
+  string url;
+  string headers;
+  string ctype;
+  string status_text;
+  string protocol;
+  array<NetRedirect> redirects;
+  int32 error;
+};
+
+// A download handed to the browser (Host.Download): the name it is saved
+// under, the address it came from, its type, its length (-1 when not
+// said) and the response's status.
+struct DownloadHead {
+  string name;
+  string url;
+  string type;
+  int64 total;
+  int32 status;
+};
+
+// The asker of one request. Closing the pipe lets the request go.
+interface NetFetchClient {
+  // A request whose body comes in pieces: its response first, then each
+  // piece. A piece is answered once it has been taken; the network
+  // process reads no further while the pieces not yet answered fill its
+  // window (net_fetch_tessronos.cc, kPaceWindow).
+  Response(NetAnswer head);
+  Piece(array<uint8> data) => ();
+  // The end: with the whole body, unless it came in pieces.
+  Done(NetAnswer answer, array<uint8> body);
+};
+
+// What the extensions' rules are told of a request, and what they do to
+// its headers ('s' set, 'a' append, 'r' remove).
+struct NetExtReq {
+  string url;
+  string initiator;
+  string type;
+  string method;
+};
+
+struct NetExtHeader {
+  int8 op;
+  string name;
+  string value;
+};
+
+// The extensions of a renderer, asked by the network process about the
+// renderer's own requests. Answered on a thread of the renderer's that
+// does nothing else, since the network stack waits for the answer.
+interface NetHooks {
+  [Sync] Rules(NetExtReq rq) => (int32 act, string redirect);
+  [Sync] HeaderRules(NetExtReq rq, bool response) => (array<NetExtHeader> ops);
+  Web(string event, int64 id, NetExtReq rq, int32 status, string more);
+  [Sync] Serve(NetExtReq rq) => (int32 act, int32 status, string ctype, string headers, array<uint8> body);
+};
+
+// A change of the cookies of an address a page watches (cookieStore).
+interface NetCookieWatcher {
+  Changed(array<uint8> cookie, int32 cause);
+};
+
+// A WebSocket of a page's, connected by the network process: what the
+// page sends and its close, and what the connection tells.
+interface NetSocket {
+  Send(bool text, array<uint8> data);
+  Close(uint16 code, string reason);
+};
+
+interface NetSocketClient {
+  Connected(string protocol, string extensions);
+  Message(bool text, array<uint8> data);
+  Consumed(uint64 bytes);
+  Closing();
+  Dropped(bool clean, uint16 code, string reason);
+  Failed(string message);
+};
+
+// A renderer's way to the network process.
+//
+// Its synchronous calls are [NoInterrupt]: the renderer's thread that
+// waits for one (the page's thread for document.cookie, inside a script,
+// a frame callback or a layout) takes no other synchronous call
+// meanwhile. The network process answers these calls by itself, without
+// calling the renderer or the browser, so the strict wait cannot
+// deadlock.
+interface Network {
+  // The renderer's extensions, for its requests that carry them (ext:
+  // 1 the rules, 2 webRequest's listeners).
+  SetHooks(pending_remote<NetHooks> hooks);
+  Fetch(string url, string method, array<uint8> body, string headers, bool stream, int32 ext,
+        pending_remote<NetFetchClient> client);
+  // The jar for document.cookie, cookieStore and the Set-Cookie lines a
+  // page's own code handles.
+  [Sync, NoInterrupt] CookieLine(string url, bool for_script) => (string line);
+  CookieSet(string url, string line, bool from_script);
+  [Sync, NoInterrupt] Cookies(string url) => (array<array<uint8>> cookies);
+  [Sync, NoInterrupt] CookiePut(array<uint8> cookie, string url) => (bool stored);
+  CookieWatch(string url, pending_remote<NetCookieWatcher> watcher);
+  // HSTS: a host's rule added (a test's), and whether one is known.
+  HstsAdd(string host);
+  [Sync, NoInterrupt] HstsKnown(string host) => (bool known);
+  // The user's clearing of the cookies, the cache and what is known of
+  // servers (br_net_data_clear), and the sites that have cookies.
+  [Sync, NoInterrupt] Clear(uint32 kinds, int64 since_us, string site) => ();
+  [Sync, NoInterrupt] Sites() => (array<string> sites);
+  // How many responses came over each protocol (br_net_protocols).
+  [Sync, NoInterrupt] Protocols() => (string text);
+  // What the network keeps written, waiting up to wait_ms.
+  [Sync, NoInterrupt] Flush(int32 wait_ms) => (bool done);
+  // A page's WebSocket (the extensions' rules were looked at by the renderer).
+  WebSocket(string url, array<string> protocols, string origin, pending_receiver<NetSocket> socket,
+            pending_remote<NetSocketClient> client);
+};
+
+// The stores of the pages' storage (localStorage, IndexedDB, the
+// passwords ...; design 14.8, 14.13.8), whose objects the network process
+// opens, reads and writes for a renderer: the renderer keeps what is in
+// memory, what changed and when to save, and asks here for the bytes kept
+// and for its changes to be written. Only the stores of the pages are
+// answered, not the network's own (cookie, cache, quic, hsts). The
+// numbers answered are those of br_store_load and the like (br_store.h).
+
+// An entry of a store kept by entries, or a change of one: 'kind' 1 put
+// (its bytes in 'val'), 2 deleted.
+struct StoreOp {
+  uint8 kind;
+  array<uint8> key;
+  array<uint8> val;
+};
+
+interface Store {
+  // A store's bytes: one kept whole (its entry of the empty key), or kept
+  // sealed or in the older form; 'live' what the entries hold (for when to
+  // write the log afresh). 'once': a try that does not wait for another
+  // writer.
+  [Sync] Load(string name, bool once) => (int32 rc, array<uint8> bytes, uint64 live);
+  // Every entry of a store kept by entries.
+  [Sync] LoadEntries(string name, bool once) => (int32 rc, array<StoreOp> entries, uint64 live);
+  // Which version of the store is kept (its generation and the length of
+  // its log), to see whether another process wrote it; asked once.
+  [Sync] Version(string name) => (bool ok, uint64 version);
+  // A store kept sealed ("creds", "autofill") or in the older form made 'bytes'.
+  [Sync] Save(string name, array<uint8> bytes) => (int32 rc);
+  // A save of a store kept by entries: the changes appended to its log,
+  // or every entry written afresh ('whole': the store is these entries
+  // alone). 'live' is what the entries hold as the renderer knows it; the
+  // answer: the bytes written or a negative number, whether it was written
+  // afresh, and what they hold now.
+  [Sync] Apply(string name, array<StoreOp> ops, bool whole, bool afresh, uint64 live)
+      => (int64 written, bool fresh, uint64 live);
+
+  // The passwords and passkeys (br_cred_core.h): never the store's bytes,
+  // only what one origin may have, and only for an origin of the site the
+  // browser gave the renderer (NetworkService.SetSite). 'rc' is BR_CRED_*.
+  [Sync] PasswordsFor(string origin) => (array<SavedPassword> passwords);
+  [Sync] PasswordKeep(string origin, SavedPassword password) => (bool kept);
+  [Sync] PasskeysFor(string origin, string rp) => (array<PasskeyFound> keys);
+  [Sync] PasskeyMake(string origin, string rp, array<uint8> user_id, string user_name,
+                     array<array<uint8>> exclude)
+      => (int32 rc, array<uint8> id, array<uint8> auth_data, array<uint8> attestation,
+          array<uint8> public_key);
+  // The private key stays where it is kept: the challenge is signed there.
+  [Sync] PasskeySign(string origin, string rp, array<uint8> id, string client_data)
+      => (int32 rc, array<uint8> auth_data, array<uint8> signature, array<uint8> user_handle);
+
+  // The extensions (design 14.12): the list's links, an extension's
+  // package (one of the list, or one the browser named: ExtAllow), the
+  // state kept of them, and the list's links added and taken away.
+  [Sync] ExtList() => (bool ok, array<string> uuids);
+  [Sync] ExtRead(string uuid) => (bool ok, array<uint8> bytes);
+  [Sync] ExtState() => (bool ok, string json);
+  [Sync] ExtStateWrite(string json) => (bool ok);
+  [Sync] ExtLink(string uuid, string name) => (bool ok);
+  [Sync] ExtUnlink(string uuid) => (bool ok);
+};
+
+struct SavedPassword {
+  string id;
+  string name;
+  string password;
+};
+
+struct PasskeyFound {
+  array<uint8> id;
+  string user_name;
+};
+
+// The browser's pipe to the network process: the invitation's one.
+interface NetworkService {
+  // A renderer's pipes, to the network and to the stores, bound in the
+  // network process; 'renderer' is its number (the process's), which has
+  // no site until SetSite.
+  Connect(int32 renderer, pending_receiver<Network> network, pending_receiver<Store> store);
+  // The site the browser shows in the renderer (net::SchemefulSite): the
+  // origins whose passwords and passkeys its Store pipe is answered for.
+  SetSite(int32 renderer, string site);
+  // An extension's object the user chose (or a test's line named), which
+  // a renderer may read and link to the list.
+  ExtAllow(string uuid);
+  [Sync] Flush(int32 wait_ms) => (bool done);
+  // The browser ends: the network process writes what it keeps and ends.
+  Closing();
+};
+
+const uint64 kNetworkServicePipe = 0;
+
+// ---------------------------------------------------------------- the GPU process
+
+// The GPU process holds the GPU's work of every renderer: the command
+// buffers' service (the raster's, WebGL's and WebGPU's decoders), the
+// shared images, the scheduler and the sync points, on ANGLE over Mesa.
+// The browser starts it with its own pipes (GpuService, GpuHost); a
+// renderer asks the browser for a channel to it (Host.GpuChannel), which
+// the browser has the GPU process make (GpuService.EstablishChannel).
+
+// A channel to the GPU process, given to a renderer.
+struct GpuChannelInfo {
+  // One end of the channel (gpu.mojom.GpuChannel's, over its IPC channel).
+  handle<message_pipe> channel;
+  // gpu::mojom::GpuInfo, GpuFeatureInfo and SharedImageCapabilities, serialized.
+  array<uint8> gpu_info;
+  array<uint8> feature_info;
+  array<uint8> shared_image_caps;
+  // Whether the page and canvas 2D are rastered on the GPU; WebGL 2 and
+  // WebGPU's adapter there.
+  bool raster;
+  bool webgl2;
+  bool webgpu;
+  // GL_RENDERER, for the console's lines.
+  string renderer;
+  // The GPU process's number in turn, one more each time it is started.
+  int32 generation;
+  // The GPU process's process number: the window's buffers it made
+  // (GpuService.MakeGsurf) are rastered into on a channel to it only.
+  int32 gpu_pid;
+};
+
+// The shared image of one of the window's GPU buffers, as a renderer names it.
+struct GsurfImage {
+  array<uint8, 16> mailbox;
+};
+
+// One of the window's GPU buffers (design 14.13.10): a BO the GPU process
+// made, linear, 0x00RRGGBB in a word, which a page's frames are rastered
+// into and the window is shown from.
+struct GsurfBuf {
+  // A PRIME descriptor of the BO: a key to its object (OB_S_GPUBO), which
+  // the browser writes into the window's record OB_WR_GSURF.
+  handle<platform> bo;
+  GsurfImage image;
+};
+
+// The browser's pipe to the GPU process.
+interface GpuService {
+  // Once, after it is started: 'mode' is gpu=on, off or the default (BR_GPU_*).
+  [Sync] Start(int32 mode) => (bool ok, bool on_gpu, string renderer, string why);
+  // A channel for a renderer ('client_id' its process number); null when none can be had.
+  [Sync] EstablishChannel(int32 client_id, uint64 tracing_id) => (GpuChannelInfo? channel);
+  // The renderer has ended.
+  CloseChannel(int32 client_id);
+  // What the tests and the statistics read.
+  [Sync] Query(string what) => (string value);
+  // The browser ends.
+  Closing();
+  // Two buffers for a window's page, 'w' x 'h' (the window's GPU buffers,
+  // design 14.13.10), under 'id' (> 0), rows of 'pitch' bytes. 'how' is
+  // "drawn" (the GPU draws into the BOs), "copied" (the GL draws on the
+  // processor, and each raster's end copies the drawing into the BO) or
+  // "" when none can be made ('why' says why).
+  [Sync] MakeGsurf(int32 w, int32 h)
+      => (int32 id, uint32 pitch, array<GsurfBuf> bufs, string how, string why);
+  // The buffers 'id' let go of: the window holds those it shows itself.
+  DropGsurf(int32 id);
+};
+
+// The GPU process's pipe to the browser.
+interface GpuHost {
+  // The machine's GPU came after the process was started: the browser starts it again.
+  GpuArrived(string what);
+};
+
+const uint64 kGpuServicePipe = 0;
+const uint64 kGpuHostPipe = 1;

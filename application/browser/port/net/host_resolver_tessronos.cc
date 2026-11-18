@@ -9,12 +9,18 @@
 
 /*
  *	host_resolver_tessronos.cc
- *	ブラウザ: the lookup of names for the network stack (design 17.19).
+ *	ブラウザ: the lookup of names through the system's resolver, for the
+ *	network stack (design 17.19). The stack's own DNS client asks first
+ *	(net_fetch_tessronos.cc) and comes here when it cannot answer, or for
+ *	every name when there is no name server or it is turned off.
  *
  *	Each lookup is made on a thread of its own (br_stream_resolve_start)
  *	and the task looks for its answer every hundredth of a second, so a
  *	name server that is slow to answer does not hold the network thread.
- *	IPv4 only.
+ *	The answer is every address of the family asked for, IPv4 and IPv6,
+ *	in the order the system gives them; a question for both leaves out a
+ *	family the machine has no address of its own to reach the world
+ *	with.
  */
 
 #include "net/dns/host_resolver_system_task.h"
@@ -34,11 +40,40 @@
 
 #include <unistd.h>
 
+#include <optional>
+
 #include "br_stream.h"
 
 #include <stdio.h>
 
 namespace net {
+
+namespace {
+
+// The family of a lookup as br_stream asks it: 4, 6, or 0 for both
+int BridgeFamily(AddressFamily family) {
+  return family == ADDRESS_FAMILY_IPV4 ? 4 : family == ADDRESS_FAMILY_IPV6 ? 6 : 0;
+}
+
+// The addresses found, as the list the stack takes. The port belongs to the
+// caller, which fills it in once it knows which service it is reaching; a
+// lookup answers with the addresses alone.
+AddressList ToList(const BrAddr* a, int n) {
+  AddressList list;
+  for (int i = 0; i < n; ++i) {
+    if (a[i].len != 4 && a[i].len != 16)
+      continue;
+    const IPAddress address(
+        base::span<const uint8_t>(a[i].addr, static_cast<size_t>(a[i].len)));
+    std::optional<uint32_t> scope;
+    if (a[i].len == 16 && a[i].scope != 0 && address.IsLinkLocal())
+      scope = a[i].scope;
+    list.push_back(IPEndPoint(address, 0, scope));
+  }
+  return list;
+}
+
+}  // namespace
 
 // Nothing has to be set up in advance: the lookup runs where it is asked
 // for, so there is no worker to make ready.
@@ -54,26 +89,22 @@ int SystemHostResolverCall(const std::string& host,
     *os_error = 0;
   if (addrlist == nullptr)
     return ERR_FAILED;
-  if (address_family == ADDRESS_FAMILY_IPV6)
-    return ERR_NAME_NOT_RESOLVED;
 
-  unsigned char ip4[4] = {0, 0, 0, 0};
-  const int slot = br_stream_resolve_start(host.c_str(), ip4);
+  BrAddr found[BR_RESOLVE_MAX];
+  int n = 0;
+  const int slot = br_stream_resolve_start(host.c_str(), BridgeFamily(address_family), found, &n);
   int st = slot == -2 ? 1 : slot < 0 ? -1 : 0;
   while (st == 0) {
     usleep(10000);
-    st = br_stream_resolve_poll(slot, ip4);
+    st = br_stream_resolve_poll(slot, found, &n);
   }
-  if (st < 0) {
+  if (st < 0 || n <= 0) {
     printf("browser: dns: %s not resolved\n", host.c_str());
     return ERR_NAME_NOT_RESOLVED;
   }
 
-  // The port belongs to the caller, which fills it in once it knows which
-  // service it is reaching; a lookup answers with the address alone.
-  *addrlist = AddressList(
-      IPEndPoint(IPAddress(ip4[0], ip4[1], ip4[2], ip4[3]), 0));
-  return OK;
+  *addrlist = ToList(found, n);
+  return addrlist->empty() ? ERR_NAME_NOT_RESOLVED : OK;
 }
 
 // The parameter objects carry nothing this port acts on -- retry counts and
@@ -184,12 +215,13 @@ void PollLookup(base::WeakPtr<HostResolverSystemTask> self,
     br_stream_resolve_cancel(slot);
     return;
   }
-  unsigned char ip4[4] = {0, 0, 0, 0};
-  const int st = br_stream_resolve_poll(slot, ip4);
+  BrAddr found[BR_RESOLVE_MAX];
+  int n = 0;
+  const int st = br_stream_resolve_poll(slot, found, &n);
   if (st == 1) {
-    std::move(cb).Run(
-        AddressList(IPEndPoint(IPAddress(ip4[0], ip4[1], ip4[2], ip4[3]), 0)),
-        0, OK);
+    AddressList list = ToList(found, n);
+    const int rv = list.empty() ? ERR_NAME_NOT_RESOLVED : OK;
+    std::move(cb).Run(std::move(list), 0, rv);
     return;
   }
   if (st < 0 || base::TimeTicks::Now() - started > base::Seconds(20)) {
@@ -223,18 +255,19 @@ void HostResolverSystemTask::Start(SystemDnsResultsCallback results_cb) {
   if (results_cb.is_null())
     return;
   base::WeakPtr<HostResolverSystemTask> self = weak_ptr_factory_.GetWeakPtr();
-  if (!hostname_.has_value() || address_family_ == ADDRESS_FAMILY_IPV6) {
+  if (!hostname_.has_value()) {
     DeliverLookup(std::move(self), std::move(results_cb), AddressList(),
                   ERR_NAME_NOT_RESOLVED);
     return;
   }
-  unsigned char ip4[4] = {0, 0, 0, 0};
-  const int slot = br_stream_resolve_start(hostname_->c_str(), ip4);
+  BrAddr found[BR_RESOLVE_MAX];
+  int n = 0;
+  const int slot = br_stream_resolve_start(hostname_->c_str(),
+                                           BridgeFamily(address_family_), found, &n);
   if (slot == -2) {
-    DeliverLookup(std::move(self), std::move(results_cb),
-                  AddressList(IPEndPoint(
-                      IPAddress(ip4[0], ip4[1], ip4[2], ip4[3]), 0)),
-                  OK);
+    AddressList list = ToList(found, n);
+    const int rv = list.empty() ? ERR_NAME_NOT_RESOLVED : OK;
+    DeliverLookup(std::move(self), std::move(results_cb), std::move(list), rv);
     return;
   }
   if (slot < 0) {

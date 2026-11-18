@@ -1,0 +1,24 @@
+--- a/third_party/blink/renderer/modules/websockets/websocket_stream.cc	2026-10-07 23:32:04.462344777 +0900
++++ b/third_party/blink/renderer/modules/websockets/websocket_stream.cc	2026-10-07 23:32:04.488321075 +0900
+@@ -43,6 +43,11 @@
+ 
+ namespace blink {
+ 
++// The channel runs over the network stack in this process, as WebSocket's
++// does (application/browser/port/blink/websocket_tessronos.cc).
++WebSocketChannel* BrCreateWebSocketChannel(ExecutionContext* context,
++                                           WebSocketChannelClient* client);
++
+ namespace {
+ 
+ // This is used in several places, so use a constant to avoid typos.
+@@ -473,8 +478,7 @@
+   if (channel) {
+     stream->channel_ = channel;
+   } else {
+-    stream->channel_ = WebSocketChannelImpl::Create(
+-        execution_context, stream, CaptureSourceLocation(execution_context));
++    stream->channel_ = BrCreateWebSocketChannel(execution_context, stream);
+   }
+   stream->Connect(script_state, url, options, exception_state);
+   if (exception_state.HadException()) {

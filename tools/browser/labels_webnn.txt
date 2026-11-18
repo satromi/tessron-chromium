@@ -1,0 +1,10 @@
+//services/webnn/public/mojom:mojom
+//services/webnn/public/mojom:mojom_blink
+//services/webnn/public/mojom:mojom_shared_cpp_sources
+//services/webnn/public/mojom:device_blink
+//services/webnn/public/mojom:features_blink
+//services/webnn/public/mojom:webnn_service_introspection_blink
+//services/webnn/public/cpp:cpp
+//services/webnn:webnn_service_base
+//services/webnn:webnn_service_resource_management
+//services/webnn:webnn_switches

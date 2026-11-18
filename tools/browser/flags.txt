@@ -10,8 +10,43 @@ v8/src/objects/simd.cc -flax-vector-conversions
 # engine's own files of that name
 tests/uprog/ -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
 application/browser/br_ -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+# the browser's and the renderers' interfaces, made C++ by build.sh (br_mojom)
+application/browser/br_proc -I{OBJ}/_brgen
+application/browser/br_rproc -I{OBJ}/_brgen
+application/browser/port/net/net_service -I{OBJ}/_brgen
+application/browser/port/net/store_service -I{OBJ}/_brgen
+application/browser/port/gpu/br_gpu_main -I{OBJ}/_brgen
+application/browser/port/gpu/br_gpu_client -I{OBJ}/_brgen
+application/browser/port/blink/websocket_tessronos -I{OBJ}/_brgen
+_brgen/application/browser/mojom/ -I{OBJ}/_brgen
 application/browser/port/net/br_store -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+application/browser/port/net/br_tray -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+application/browser/port/net/br_objfile -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+application/browser/port/net/br_print -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+application/browser/port/net/br_serial -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+application/browser/port/net/br_notify -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+application/browser/port/net/br_cpu -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+application/browser/port/net/br_sysnet -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+application/browser/port/net/br_usb -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
 application/browser/port/media/br_snd -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+application/browser/port/media/br_cam -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+application/browser/port/media/br_screen -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+application/browser/port/ext/br_ext_os -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+application/browser/port/media/br_hevc -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+application/browser/port/media/br_widevine -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+application/browser/port/speech/br_speech_rec -I{TS}/include -DTS_CONFIG_H="{TS}/config/config.h"
+
+# hunspell for the spelling (port/spell): its reader of lines the port's
+# (port/spell/filemgr_ts.hxx, read first, in place of filemgr.hxx), case
+# by ICU as Chromium has it, and the header its configure would write
+third_party/hunspell/src/hunspell/ -I{BR}/application/browser/port/spell -include {BR}/application/browser/port/spell/filemgr_ts.hxx -DOPENOFFICEORG -DHUNSPELL_STATIC -DMAXSUGGESTION=5
+application/browser/port/spell/ -include {BR}/application/browser/port/spell/filemgr_ts.hxx -DHUNSPELL_STATIC -DOPENOFFICEORG
+
+# The engine's embedder calls what the patches add to Blink's headers
+# (patches/file_chooser.patch). A patched header named from the checkout's
+# root is not put before the root for every source, which would change
+# the command of each; the embedder looks in the patched tree first itself.
+application/browser/br_blink.cc -iquote {OBJ}/_patched_inc
 
 # BoringSSL in C only: its assembly is not built
 third_party/boringssl/ -DOPENSSL_NO_ASM
@@ -41,3 +76,60 @@ skia/src/encode/SkPngEncoderImpl.cpp -I../../third_party/libpng
 # instructions: they are called only where the processor says it has them
 libyuv/source/row_neon64.cc -march=armv8.2-a+dotprod+i8mm
 libyuv/source/compare_neon64.cc -march=armv8.2-a+dotprod+i8mm
+
+# FFmpeg's error text takes strerror_r's POSIX form (it returns a number)
+third_party/ffmpeg/libavutil/error.c -U_GNU_SOURCE
+
+# libvpx's rows with the dot product, matrix multiply and SVE
+# instructions: they are called only where the processor says it has them
+libvpx/vpx_dsp/arm/sad4d_neon_dotprod.c -march=armv8.2-a+dotprod+i8mm
+libvpx/vpx_dsp/arm/sad_neon_dotprod.c -march=armv8.2-a+dotprod+i8mm
+libvpx/vpx_dsp/arm/sse_neon_dotprod.c -march=armv8.2-a+dotprod+i8mm
+libvpx/vpx_dsp/arm/variance_neon_dotprod.c -march=armv8.2-a+dotprod+i8mm
+libvpx/vpx_dsp/arm/subpel_variance_neon_dotprod.c -march=armv8.2-a+dotprod+i8mm
+libvpx/vpx_dsp/arm/highbd_variance_neon_dotprod.c -march=armv8.2-a+dotprod+i8mm
+libvpx/vpx_dsp/arm/vpx_convolve8_neon_dotprod.c -march=armv8.2-a+dotprod+i8mm
+libvpx/vpx_dsp/arm/vpx_convolve8_neon_i8mm.c -march=armv8.2-a+dotprod+i8mm
+libvpx/vpx_dsp/arm/highbd_vpx_convolve8_sve2.c -march=armv8.2-a+dotprod+i8mm+sve2
+libvpx/vpx_dsp/arm/highbd_vpx_convolve8_sve.c -march=armv8.2-a+dotprod+i8mm+sve
+libvpx/vpx_dsp/arm/sum_squares_sve.c -march=armv8.2-a+dotprod+i8mm+sve
+libvpx/vpx_dsp/arm/highbd_variance_sve.c -march=armv8.2-a+dotprod+i8mm+sve
+
+# The audio processing of media/webrtc and WebRTC names a TFLite model only
+# by reference; its header is the port's declaration of the type, found by
+# the TFLite shim's #include_next after every other directory
+third_party/blink/renderer/modules/mediastream/ -idirafter {BR}/application/browser/port/tflite
+media/webrtc/ -idirafter {BR}/application/browser/port/tflite
+
+# libaom's rows with the dot product and matrix multiply instructions
+# (the AV1 encoder): called only where the processor says it has them
+_neon_dotprod.c -march=armv8.2-a+dotprod+i8mm
+_neon_i8mm.c -march=armv8.2-a+dotprod+i8mm
+
+# PDFium's interface, for the PDF documents shown in the page (port/blink/pdf_tessronos.cc)
+application/browser/port/blink/pdf_tessronos -I../../third_party/pdfium
+# PDFium's dates take the zone's offset from the C library's global, which newlib names _timezone
+third_party/pdfium/fxjs/fx_date_helpers.cpp -Dtimezone=_timezone
+third_party/pdfium/xfa/fxfa/parser/cxfa_timezoneprovider.cpp -Dtimezone=_timezone
+# the LanguageDetector's model: CLD3 and the protobuf runtime of its generated headers
+application/browser/port/blink/ai_tessronos -I../../third_party/protobuf/src -I../../third_party/cld_3/src/src -I../../third_party/abseil-cpp
+
+# WebNN: the service's switches of LiteRT and XNNPACK turned off (the
+# browser computes the graphs, port/blink/webnn_tessronos.cc)
+services/webnn/ -include {BR}/application/browser/port/blink/webnn_flags.h
+third_party/blink/renderer/modules/ml/ -include {BR}/application/browser/port/blink/webnn_flags.h
+application/browser/port/blink/webnn_tessronos -include {BR}/application/browser/port/blink/webnn_flags.h
+
+# WebGL on WebGPU: Dawn's wire client is there (make GL=1)
+third_party/blink/renderer/modules/webgl/webgl_rendering_context_webgpu_base -include {BR}/application/browser/port/webgl/webgl_webgpu_flags.h
+
+# WebGPU's decoder in the GPU process, and the shared images of EGL images
+# its Dawn takes: Dawn's OpenGL ES backend is there (make GL=1)
+gpu/command_buffer/service/webgpu_decoder_impl -include {BR}/application/browser/port/gpu/dawn_gles_flags.h
+gpu/command_buffer/service/shared_image/egl_image_backing.cc -include {BR}/application/browser/port/gpu/dawn_gles_flags.h
+
+# ANGLE's WebGPU backend and its WGSL output: their debugging prints name
+# std::cout, which the C++ library of the sources' build brings in by itself
+third_party/angle/src/libANGLE/renderer/wgpu/ProgramWgpu -include iostream
+third_party/angle/src/libANGLE/renderer/wgpu/wgpu_wgsl_util -include iostream
+third_party/angle/src/compiler/translator/wgsl/RewritePipelineVariables -include iostream

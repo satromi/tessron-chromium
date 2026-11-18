@@ -1,0 +1,25 @@
+--- a/third_party/blink/renderer/core/frame/local_frame_view.cc	2026-10-02 23:58:44.922316778 +0900
++++ b/third_party/blink/renderer/core/frame/local_frame_view.cc	2026-10-02 23:58:44.922538148 +0900
+@@ -3258,6 +3258,12 @@
+   return const_cast<LocalFrameView*>(this)->RootCcLayer();
+ }
+ 
++// Told of the paint artifact after each paint when compositing is off,
++// while the artifact it replaced is still whole (the paint controller
++// clears that one as it goes): an embedder that paints the artifact
++// itself finds there what changed, as a compositor finds it for a layer.
++void (*g_non_composited_paint_hook)(LocalFrameView&) = nullptr;
++
+ void LocalFrameView::PushPaintArtifactToCompositor(bool repainted) {
+   TRACE_EVENT0("blink", "LocalFrameView::pushPaintArtifactToCompositor");
+   if (!frame_->GetSettings()->GetAcceleratedCompositingEnabled()) {
+@@ -3265,6 +3271,9 @@
+       paint_artifact_compositor_->WillBeRemovedFromFrame();
+       paint_artifact_compositor_ = nullptr;
+     }
++    if (g_non_composited_paint_hook) {
++      g_non_composited_paint_hook(*this);
++    }
+     return;
+   }
+ 

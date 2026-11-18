@@ -1,0 +1,13 @@
+--- a/third_party/blink/renderer/modules/printing/web_printing_manager.cc
++++ b/third_party/blink/renderer/modules/printing/web_printing_manager.cc
+@@ -100,7 +100,9 @@
+ }
+
+ mojom::blink::WebPrintingService* WebPrintingManager::GetPrintingService() {
+-#if BUILDFLAG(IS_CHROMEOS) && BUILDFLAG(USE_CUPS)
++  // The embedder (TessronOS) prints through its desktop on every build, as
++  // ChromeOS does through CUPS: the service is asked of the broker.
++#if 1
+   if (!printing_service_.is_bound()) {
+     auto* execution_context = GetExecutionContext();
+     execution_context->GetBrowserInterfaceBroker().GetInterface(

@@ -1,0 +1,19 @@
+--- a/third_party/blink/renderer/core/loader/loader_factory_for_frame.cc
++++ b/third_party/blink/renderer/core/loader/loader_factory_for_frame.cc
+@@ -149,8 +149,14 @@
+     bool is_from_origin_dirty_style_sheet) {
+   LocalFrame* frame = window_->GetFrame();
+   CHECK(frame);
+-  if (std::unique_ptr<URLLoader> loader = frame->CreateURLLoaderForTesting()) {
+-    return loader;
++  // The embedder's own loader, except for a blob: URL and a load given a
++  // factory of its own (a blob: URL resolved earlier), which go to the
++  // factory the URL resolves to.
++  if (!options.url_loader_factory && !network_request.url.SchemeIsBlob()) {
++    if (std::unique_ptr<URLLoader> loader =
++            frame->CreateURLLoaderForTesting()) {
++      return loader;
++    }
+   }
+ 
+   if (prefetched_signed_exchange_manager_) {

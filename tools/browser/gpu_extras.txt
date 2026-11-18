@@ -1,0 +1,24 @@
+# The sources of the GPU process's service that are built only with Dawn
+# (WebGPU's decoder, Dawn's wire server and the shared images' Dawn
+# representations), which the engine's gn graph (made without Dawn) has
+# no command for: compiled with the command of a decoder of the same
+# target (tools/browser/build.sh gpusvc_lib): SRC=REF. Dawn's Ozone
+# representation is left out with the rest of Ozone (exclude_gpu.txt).
+//gpu/command_buffer/service/dawn_caching_interface.cc=gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
+//gpu/command_buffer/service/dawn_instance.cc=gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
+//gpu/command_buffer/service/dawn_platform.cc=gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
+//gpu/command_buffer/service/dawn_service_memory_transfer_service.cc=gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
+//gpu/command_buffer/service/dawn_service_serializer.cc=gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
+//gpu/command_buffer/service/dawn_wire_server.cc=gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
+//gpu/command_buffer/service/webgpu_decoder_impl.cc=gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
+//gpu/command_buffer/service/shared_image/dawn_copy_strategy.cc=gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
+//gpu/command_buffer/service/shared_image/dawn_egl_image_representation.cc=gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
+//gpu/command_buffer/service/shared_image/dawn_fallback_image_representation.cc=gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
+//gpu/command_buffer/service/shared_image/dawn_gl_texture_representation.cc=gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
+//gpu/command_buffer/service/shared_image/dawn_image_backing.cc=gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
+//gpu/command_buffer/service/shared_image/dawn_image_backing_factory.cc=gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
+# ui/gl/init's platform part: ANGLE on the native EGL, no windows
+# Ozone's platform object, which the shared images' factory asks whether
+# there are native pixmaps (port/gpu/br_gpu_main.cc gives one with none)
+//ui/ozone/public/ozone_platform.cc=ui/ozone/public/ozone_platform.cc
+application/browser/port/gpu/gl_init_tessronos.cc=ui/gl/init/gl_factory_ozone.cc

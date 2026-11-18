@@ -1,0 +1,55 @@
+--- a/third_party/blink/renderer/core/frame/local_frame.cc
++++ b/third_party/blink/renderer/core/frame/local_frame.cc
+@@ -146,6 +146,7 @@
+ #include "third_party/blink/renderer/core/exported/web_plugin_container_impl.h"
+ #include "third_party/blink/renderer/core/fileapi/public_url_manager.h"
+ #include "third_party/blink/renderer/core/fragment_directive/text_fragment_handler.h"
++#include "third_party/blink/renderer/core/frame/animation_frame_timing_monitor.h"
+ #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
+ #include "third_party/blink/renderer/core/frame/event_handler_registry.h"
+ #include "third_party/blink/renderer/core/frame/frame_console.h"
+@@ -2969,10 +2970,20 @@
+   return base::UnguessableToken::Null();
+ }
+ 
++// An embedder whose frames have no widget (TessronOS) keeps the monitor of
++// the animation frames itself: the monitor of a frame's page, or null.
++CORE_EXPORT AnimationFrameTimingMonitor* (*g_frame_timing_monitor_hook)(
++    LocalFrame&) = nullptr;
++
+ void LocalFrame::OnTaskCompleted(base::TimeTicks start_time,
+                                  base::TimeTicks end_time) {
+   if (FrameWidget* widget = GetWidgetForLocalRoot()) {
+     widget->OnTaskCompletedForFrame(start_time, end_time, this);
++  } else if (g_frame_timing_monitor_hook) {
++    if (AnimationFrameTimingMonitor* monitor =
++            g_frame_timing_monitor_hook(*this)) {
++      monitor->OnMainThreadTaskCompleted(start_time, end_time, this);
++    }
+   }
+ }
+ 
+@@ -4001,6 +4012,12 @@
+   std::move(callback).Run(converted_bitmap, bounds);
+ }
+ 
++// An embedder with no browser process to ask (TessronOS) saves what a page
++// downloads itself: given the parameters a browser would be sent.
++CORE_EXPORT void (*g_download_url_hook)(LocalFrame&,
++                                        mojom::blink::DownloadURLParamsPtr) =
++    nullptr;
++
+ void LocalFrame::DownloadURL(
+     const ResourceRequest& request,
+     network::mojom::blink::RedirectMode cross_origin_redirect_behavior) {
+@@ -4044,6 +4061,10 @@
+   params->blob_url_token = std::move(blob_url_token);
+   params->has_user_gesture = request.HasUserGesture();
+ 
++  if (g_download_url_hook) {
++    g_download_url_hook(*this, std::move(params));
++    return;
++  }
+   GetLocalFrameHostRemote().DownloadURL(std::move(params));
+ }
+ 

@@ -1,0 +1,36 @@
+--- a/services/webnn/webnn_context_provider_in_renderer.cc
++++ b/services/webnn/webnn_context_provider_in_renderer.cc
+@@ -20,6 +20,15 @@
+ 
+ namespace webnn {
+ 
++// The embedder's context on the processor, made on the owning sequence,
++// for a build without LiteRT (TessronOS); none when it gives none.
++WebNNContextImpl::WebNNContextImplPtr (*g_cpu_context_for_renderer)(
++    mojo::PendingReceiver<mojom::WebNNContext>,
++    base::WeakPtr<WebNNContextProviderInRenderer>,
++    mojom::CreateContextOptionsPtr,
++    scoped_refptr<base::SingleThreadTaskRunner>,
++    scoped_refptr<base::SingleThreadTaskRunner>) = nullptr;
++
+ WebNNContextProviderInRenderer::WebNNContextProviderInRenderer(
+     mojo::PendingRemote<mojom::WebNNWeightsFileCreator>
+         weights_file_creator_remote,
+@@ -62,6 +71,17 @@
+       base::BindOnce(&WebNNContextProviderInRenderer::OnCreateWebNNContextImpl,
+                      GetWeakPtr(), std::move(callback), std::move(remote)));
+ #else
++  if (g_cpu_context_for_renderer) {
++    owning_task_runner->PostTaskAndReplyWithResult(
++        FROM_HERE,
++        base::BindOnce(g_cpu_context_for_renderer, std::move(receiver),
++                       GetWeakPtr(), std::move(options), owning_task_runner,
++                       main_task_runner_),
++        base::BindOnce(
++            &WebNNContextProviderInRenderer::OnCreateWebNNContextImpl,
++            GetWeakPtr(), std::move(callback), std::move(remote)));
++    return;
++  }
+   std::move(callback).Run(ToError<mojom::CreateContextResult>(
+       mojom::Error::Code::kNotSupportedError,
+       "WebNN is not supported on this platform."));

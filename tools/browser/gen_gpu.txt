@@ -1,0 +1,3 @@
+# ninja targets that write headers the GPU process's sources read (tools/browser/hostgen.sh):
+# the list of Ozone's platforms ui/ozone/public/ozone_platform.cc names (gpu_extras.txt)
+ui/ozone:generate_ozone_platform_list

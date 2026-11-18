@@ -1,0 +1,45 @@
+--- a/third_party/blink/renderer/platform/language_detection/language_detection_model.cc
++++ b/third_party/blink/renderer/platform/language_detection/language_detection_model.cc
+@@ -24,9 +24,18 @@
+
+ namespace blink {
+
++// An embedder with a model of its own in the process (TessronOS: CLD3)
++// gives the predictions of a text: then no model file is loaded.
++PLATFORM_EXPORT std::vector<language_detection::Prediction> (
++    *g_detect_language_hook)(const std::string& text) = nullptr;
++
+ void LanguageDetectionModel::LoadModelFile(
+     base::File model_file,
+     CreateLanguageDetectionModelCallback callback) {
++  if (g_detect_language_hook) {
++    std::move(callback).Run(this);
++    return;
++  }
+   language_detection_model_.UpdateWithFileAsync(
+       std::move(model_file),
+       blink::BindOnce(
+@@ -48,7 +57,7 @@
+     scoped_refptr<base::SequencedTaskRunner>& task_runner,
+     const String& text,
+     DetectLanguageCallback on_complete) {
+-  if (!language_detection_model_.IsAvailable()) {
++  if (!g_detect_language_hook && !language_detection_model_.IsAvailable()) {
+     std::move(on_complete)
+         .Run(base::unexpected(blink::DetectLanguageError::kUnavailable));
+     return;
+@@ -62,6 +71,14 @@
+ void LanguageDetectionModel::DetectLanguageImpl(
+     const String& text,
+     DetectLanguageCallback on_complete) {
++  if (g_detect_language_hook) {
++    Vector<LanguagePrediction> predictions;
++    for (const auto& p : g_detect_language_hook(text.Utf8())) {
++      predictions.emplace_back(p.language, p.score);
++    }
++    std::move(on_complete).Run(predictions);
++    return;
++  }
+   String text_16 = text;
+   text_16.Ensure16Bit();
+   auto score_by_language =

@@ -58,6 +58,8 @@ int	br_net_fetch_sync( const char *url, const char *method, const void *body,
 			   int timeout_ms ) __attribute__((weak));
 int	br_net_cookie_line( const char *url, int for_script, char *out, int cap ) __attribute__((weak));
 void	br_net_cookie_set( const char *url, const char *line, int from_script ) __attribute__((weak));
+int	br_net_fetch_error( const char *url, char *name, unsigned cap ) __attribute__((weak));
+int	br_net_fetch_protocol( const char *url, char *name, unsigned cap ) __attribute__((weak));
 }
 
 static bool net_stack()
@@ -95,8 +97,13 @@ bool br_url_parse( const std::string &s, BrUrl *u )
 	std::string hp = s.substr(p, ( q == std::string::npos ) ? std::string::npos : q - p);
 	size_t at = hp.rfind('@');
 	if ( at != std::string::npos ) hp = hp.substr(at + 1);
+	/* an IPv6 address is in brackets ("[2001:db8::1]:8080"), which the host keeps */
+	size_t rb = ( !hp.empty() && hp[0] == '[' ) ? hp.find(']') : std::string::npos;
 	size_t colon = hp.rfind(':');
-	if ( colon != std::string::npos && hp.find(']') == std::string::npos ) {
+	if ( rb != std::string::npos ) {
+		if ( rb + 1 < hp.size() && hp[rb + 1] == ':' ) u->port = atoi(hp.c_str() + rb + 2);
+		hp = hp.substr(0, rb + 1);
+	} else if ( colon != std::string::npos && hp.find(']') == std::string::npos ) {
 		u->port = atoi(hp.c_str() + colon + 1);
 		hp = hp.substr(0, colon);
 	}
@@ -347,31 +354,40 @@ static bool dial( const BrUrl &u, Conn *c, std::string *err )
 	struct addrinfo	hints, *res = nullptr;
 	char		port[8];
 
+	/* the addresses of both families, in the order the system would try them */
+	std::string name = u.host;
+	if ( name.size() >= 2 && name[0] == '[' && name.back() == ']' ) name = name.substr(1, name.size() - 2);
 	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_INET;
+	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_flags = AI_ADDRCONFIG;
 	snprintf(port, sizeof(port), "%d", u.port);
-	if ( getaddrinfo(u.host.c_str(), port, &hints, &res) != 0 || res == nullptr ) {
+	if ( getaddrinfo(name.c_str(), port, &hints, &res) != 0 || res == nullptr ) {
 		*err = "名前が引けません: " + u.host;
 		return false;
 	}
-	c->fd = socket(AF_INET, SOCK_STREAM, 0);
-	if ( c->fd < 0 ) {
-		freeaddrinfo(res);
-		*err = "ソケットが作れません";
-		return false;
-	}
-	struct timeval tv = { RECV_TMO_S, 0 };
-	(void)setsockopt(c->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-	if ( connect(c->fd, res->ai_addr, res->ai_addrlen) < 0 ) {
-		freeaddrinfo(res);
-		*err = "繋がりません: " + u.host + " (" + strerror(errno) + ")";
-		return false;
+	int last = 0;
+	for ( struct addrinfo *ai = res; ai != nullptr; ai = ai->ai_next ) {
+		c->fd = socket(ai->ai_family, SOCK_STREAM, 0);
+		if ( c->fd < 0 ) {
+			last = errno;
+			continue;
+		}
+		struct timeval tv = { RECV_TMO_S, 0 };
+		(void)setsockopt(c->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+		if ( connect(c->fd, ai->ai_addr, ai->ai_addrlen) == 0 ) break;
+		last = errno;
+		close(c->fd);
+		c->fd = -1;
 	}
 	freeaddrinfo(res);
+	if ( c->fd < 0 ) {
+		*err = "繋がりません: " + u.host + " (" + strerror(last) + ")";
+		return false;
+	}
 	if ( u.scheme == "https" ) {
 		if ( br_tls_open == nullptr ) {
-			*err = "この版は HTTPS を読めません";
+			*err = "このバージョンは HTTPS を読めません";
 			return false;
 		}
 		c->tls = br_tls_open(c->fd, u.host.c_str());
@@ -504,30 +520,83 @@ static bool exchange( const BrUrl &u, const std::string &method, const std::stri
 	return true;
 }
 
-/* The fetch through the network stack, waited for */
+bool		br_nav_active;
+std::string	br_nav_from;
+
+/*
+ * The fetch through the network stack, waited for. A window's navigation
+ * is asked for as it comes and decided at its response (br_nav_head_fetch):
+ * a download is handed over there and not waited for.
+ */
 static bool fetch_net( const std::string &url, const std::string &method, const std::string &ctype,
 		       const std::string &body, BrResponse *r )
 {
 	std::string	hdrs = ctype.empty() ? std::string() : "Content-Type: " + ctype + "\r\n";
-	char		*buf = nullptr, *resp = nullptr;
-	unsigned	len = 0;
-	char		type[256] = "", final_url[4096] = "";
-	int		status = 0;
+	if ( br_nav_active && br_navigation_headers != nullptr ) hdrs += br_navigation_headers(url, br_nav_from);
+	std::string	head, rbody, rtype, rurl;
+	int		status = 0, ok = -1, answer = -1;
 
 	*r = BrResponse();
 	r->url = url;
-	int ok = br_net_fetch_sync(url.c_str(), method.c_str(), body.data(), (unsigned)body.size(),
-				   hdrs.c_str(), &buf, &len, type, sizeof(type), &status, &resp,
-				   final_url, sizeof(final_url), RECV_TMO_S * 3 * 1000);
-	free(resp);
-	if ( ok <= 0 ) {
+	bool timed = br_nav_active && br_navigation_timing != nullptr;
+	if ( timed ) br_navigation_timing(0);
+	if ( br_nav_active && br_nav_head_fetch != nullptr ) {
+		BrNavFetched nf;
+		ok = br_nav_head_fetch(url, method, body, hdrs, RECV_TMO_S * 3 * 1000, &nf);
+		if ( ok >= 0 ) {
+			head = std::move(nf.headers);
+			rbody = std::move(nf.body);
+			rtype = std::move(nf.ctype);
+			rurl = std::move(nf.url);
+			status = nf.status;
+			answer = nf.answer;
+		}
+	}
+	if ( ok < 0 ) {
+		char		*buf = nullptr, *resp = nullptr;
+		unsigned	len = 0;
+		char		type[256] = "", final_url[4096] = "";
+
+		ok = br_net_fetch_sync(url.c_str(), method.c_str(), body.data(), (unsigned)body.size(),
+				       hdrs.c_str(), &buf, &len, type, sizeof(type), &status, &resp,
+				       final_url, sizeof(final_url), RECV_TMO_S * 3 * 1000);
+		if ( resp != nullptr ) head = resp;
+		if ( ok > 0 ) rbody.assign(buf != nullptr ? buf : "", len);
+		rtype = type;
+		rurl = final_url;
+		free(resp);
 		free(buf);
+	}
+	if ( timed ) br_navigation_timing(1);
+	if ( !head.empty() ) {
+		std::string lh = lower(head);
+		r->headers = head;
+		size_t at = lh.find("content-disposition:");
+		if ( at != std::string::npos ) {
+			size_t end = head.find_first_of("\r\n", at);
+			std::string v = head.substr(at + 20, end == std::string::npos ? std::string::npos : end - at - 20);
+			v.erase(0, v.find_first_not_of(" \t"));
+			r->disposition = v;
+		}
+	}
+	if ( ok <= 0 ) {
 		r->error = "読めません: " + url;
+		char name[64] = "";
+		if ( br_net_fetch_error != nullptr && br_net_fetch_error(url.c_str(), name, sizeof(name)) != 0 ) {
+			r->code = name;
+		} else if ( ok == 0 ) {
+			r->code = "ERR_TIMED_OUT";
+		}
 		return false;
 	}
 	r->status = status;
-	if ( final_url[0] != 0 ) r->url = final_url;
-	r->type = type;
+	r->answer = answer;
+	if ( !rurl.empty() ) r->url = rurl;
+	r->type = rtype;
+	char proto[32] = "";
+	if ( br_net_fetch_protocol != nullptr && br_net_fetch_protocol(url.c_str(), proto, sizeof(proto)) ) {
+		r->protocol = proto;
+	}
 	std::string lt = lower(r->type);
 	size_t cs = lt.find("charset=");
 	if ( cs != std::string::npos ) {
@@ -535,8 +604,7 @@ static bool fetch_net( const std::string &url, const std::string &method, const 
 		v.erase(std::remove(v.begin(), v.end(), '"'), v.end());
 		r->charset = lower(v.substr(0, v.find_first_of("; ")));
 	}
-	r->body.assign(buf != nullptr ? buf : "", len);
-	free(buf);
+	r->body = std::move(rbody);
 	return true;
 }
 
@@ -548,7 +616,8 @@ bool br_fetch( const std::string &url, BrResponse *r,
 	std::string	method = method_in.empty() ? "GET" : method_in;
 	std::string	ctype = ctype_in, body = body_in;
 
-	if ( net_stack() && ( url.compare(0, 5, "http:") == 0 || url.compare(0, 6, "https:") == 0 ) ) {
+	if ( net_stack() && ( url.compare(0, 5, "http:") == 0 || url.compare(0, 6, "https:") == 0
+			      || url.compare(0, 17, "chrome-extension:") == 0 ) ) {
 		return fetch_net(url, method, ctype, body, r);
 	}
 	for ( int i = 0; i <= MAX_REDIRECTS; i++ ) {

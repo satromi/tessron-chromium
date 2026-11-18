@@ -25,26 +25,69 @@
 #include <time.h>
 #include <unistd.h>
 #include <netdb.h>
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+
+#include <algorithm>
+#include <vector>
 
 #include "br_stream.h"
 
 namespace {
 
-void fill_sa( struct sockaddr_in *sa, const unsigned char *ip4, int port )
+/* The socket address of 'a' (NULL: IPv4's any) and 'port'; its length */
+socklen_t fill_sa( struct sockaddr_storage *ss, const BrAddr *a, int port )
 {
-	memset(sa, 0, sizeof(*sa));
+	memset(ss, 0, sizeof(*ss));
+	if ( a != nullptr && a->len == 16 ) {
+		struct sockaddr_in6 *sa = (struct sockaddr_in6 *)ss;
+
+		sa->sin6_family = AF_INET6;
+		sa->sin6_port = htons((unsigned short)port);
+		memcpy(&sa->sin6_addr, a->addr, 16);
+		sa->sin6_scope_id = a->scope;
+		return sizeof(*sa);
+	}
+	struct sockaddr_in *sa = (struct sockaddr_in *)ss;
+
 	sa->sin_family = AF_INET;
 	sa->sin_port = htons((unsigned short)port);
-	if ( ip4 != nullptr ) memcpy(&sa->sin_addr, ip4, 4);
+	if ( a != nullptr ) memcpy(&sa->sin_addr, a->addr, 4);
+	return sizeof(*sa);
 }
 
-void take_sa( const struct sockaddr_in *sa, unsigned char *ip4, int *port )
+void take_sa( const struct sockaddr_storage *ss, BrAddr *a, int *port )
 {
-	if ( ip4 != nullptr ) memcpy(ip4, &sa->sin_addr, 4);
+	if ( ss->ss_family == AF_INET6 ) {
+		const struct sockaddr_in6 *sa = (const struct sockaddr_in6 *)ss;
+
+		if ( a != nullptr ) {
+			a->len = 16;
+			memcpy(a->addr, &sa->sin6_addr, 16);
+			a->scope = sa->sin6_scope_id;
+		}
+		if ( port != nullptr ) *port = ntohs(sa->sin6_port);
+		return;
+	}
+	const struct sockaddr_in *sa = (const struct sockaddr_in *)ss;
+
+	if ( a != nullptr ) {
+		memset(a, 0, sizeof(*a));
+		a->len = 4;
+		memcpy(a->addr, &sa->sin_addr, 4);
+	}
 	if ( port != nullptr ) *port = ntohs(sa->sin_port);
+}
+
+/* An address as text, for what is said on the console */
+const char *addr_text( const BrAddr *a, char *t, socklen_t len )
+{
+	if ( inet_ntop(( a->len == 16 ) ? AF_INET6 : AF_INET, a->addr, t, len) == nullptr ) {
+		snprintf(t, len, "?");
+	}
+	return t;
 }
 
 int map_result( long rv )
@@ -60,11 +103,42 @@ int set_int_opt( int fd, int level, int name, int value )
 }
 
 /*
+ * What the network thread's wait found (wait_for_work), for the turn that
+ * follows: the sockets it waited on and what came of each. A look at one
+ * of them during the turn is answered from here rather than by asking the
+ * system again; that a socket is ready is answered once (the read or the
+ * write it lets through may use it up), and a socket not waited on is
+ * asked. The list is in the order of the descriptors, and as long as the
+ * sockets waited on: it grows with them, the system's limit being the
+ * process's own (so_getlimit).
+ */
+struct Seen {
+	int	fd;
+	short	asked;
+	short	got;
+};
+
+std::vector<Seen>	g_seen;			/* the network thread's alone */
+size_t			g_nseen = 0;
+
+/*
  * Readiness is looked at with no wait: the network thread moves every
  * socket in turn and must not stop in one of them
  */
 int poll_ready( int fd, short what )
 {
+	if ( g_nseen > 0 && br_on_net_thread() ) {
+		auto end = g_seen.begin() + (long)g_nseen;
+		auto it = std::lower_bound(g_seen.begin(), end, fd,
+					   []( const Seen &e, int f ) { return e.fd < f; });
+		if ( it != end && it->fd == fd && ( it->asked & what ) != 0 ) {
+			Seen &e = *it;
+			int r = ( ( e.got & ( what | POLLHUP ) ) != 0 ) ? 1
+				: ( ( e.got & ( POLLERR | POLLNVAL ) ) != 0 ) ? BR_STREAM_ERROR : 0;
+			if ( r != 0 ) e.asked = (short)( e.asked & ~what );
+			return r;
+		}
+	}
 	struct pollfd p;
 
 	p.fd = fd;
@@ -81,32 +155,39 @@ int poll_ready( int fd, short what )
 
 extern "C" {
 
-int br_stream_open( void )
+int br_stream_open( int ipv6 )
 {
-	int s = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+	int s = socket(ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	if ( s < 0 ) {
 		printf("browser: net: no socket (%d)\n", errno);
 		return BR_STREAM_ERROR;
 	}
+	if ( ipv6 ) {
+		/* an IPv6 socket reaches IPv6 addresses only: IPv4 ones have sockets of their own */
+		int on = 1;
+		(void)setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof(on));
+	}
 	return s;
 }
 
-int br_stream_bind( int fd, const unsigned char *ip4, int port )
+int br_stream_bind( int fd, const BrAddr *a, int port )
 {
-	struct sockaddr_in sa;
+	struct sockaddr_storage ss;
+	socklen_t len = fill_sa(&ss, a, port);
 
-	fill_sa(&sa, ip4, port);
-	return ( bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0 ) ? BR_STREAM_ERROR : 0;
+	return ( bind(fd, (struct sockaddr *)&ss, len) < 0 ) ? BR_STREAM_ERROR : 0;
 }
 
-int br_stream_connect( int fd, const unsigned char *ip4, int port )
+int br_stream_connect( int fd, const BrAddr *a, int port )
 {
-	struct sockaddr_in sa;
+	struct sockaddr_storage ss;
+	socklen_t len = fill_sa(&ss, a, port);
+	char t[INET6_ADDRSTRLEN];
 
-	fill_sa(&sa, ip4, port);
-	if ( connect(fd, (struct sockaddr *)&sa, sizeof(sa)) == 0 || errno == EISCONN ) return 0;
+	if ( connect(fd, (struct sockaddr *)&ss, len) == 0 || errno == EISCONN ) return 0;
 	if ( errno == EINPROGRESS || errno == EAGAIN || errno == EWOULDBLOCK ) return BR_STREAM_WOULDBLOCK;
-	printf("browser: net: connect %d.%d.%d.%d:%d: %d\n", ip4[0], ip4[1], ip4[2], ip4[3], port, errno);
+	printf("browser: net: connect %s%s%s:%d: %d\n", ( a->len == 16 ) ? "[" : "", addr_text(a, t, sizeof(t)),
+	       ( a->len == 16 ) ? "]" : "", port, errno);
 	return BR_STREAM_ERROR;
 }
 
@@ -134,14 +215,14 @@ int br_stream_recv( int fd, void *buf, int len )
 	return map_result((long)recv(fd, buf, (size_t)len, MSG_DONTWAIT));
 }
 
-int br_stream_local( int fd, unsigned char *ip4, int *port )
+int br_stream_local( int fd, BrAddr *a, int *port )
 {
-	struct sockaddr_in sa;
-	socklen_t len = sizeof(sa);
+	struct sockaddr_storage ss;
+	socklen_t len = sizeof(ss);
 
-	memset(&sa, 0, sizeof(sa));
-	if ( getsockname(fd, (struct sockaddr *)&sa, &len) < 0 ) return BR_STREAM_ERROR;
-	take_sa(&sa, ip4, port);
+	memset(&ss, 0, sizeof(ss));
+	if ( getsockname(fd, (struct sockaddr *)&ss, &len) < 0 ) return BR_STREAM_ERROR;
+	take_sa(&ss, a, port);
 	return 0;
 }
 
@@ -198,52 +279,71 @@ enum { SLOT_FREE, SLOT_LOOKING, SLOT_DONE, SLOT_FAILED, SLOT_ABANDONED };
 struct Lookup {
 	volatile int	state = SLOT_FREE;
 	char		host[256];
-	unsigned char	ip4[4];
+	int		family;
+	BrAddr		out[BR_RESOLVE_MAX];
+	int		n;
 };
 
 constexpr int kSlots = 32;
 Lookup g_slots[kSlots];
 pthread_mutex_t g_slot_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* A dotted quad is its own address */
-bool parse_quad( const char *host, unsigned char *ip4 )
+/* A number is its own address: a dotted quad, or IPv6 (with or without its brackets) */
+bool parse_number( const char *host, int family, BrAddr *a )
 {
-	unsigned v[4];
-	char tail;
-	if ( sscanf(host, "%u.%u.%u.%u%c", &v[0], &v[1], &v[2], &v[3], &tail) != 4 ) return false;
-	for ( int i = 0; i < 4; i++ ) {
-		if ( v[i] > 255 ) return false;
-		ip4[i] = (unsigned char)v[i];
+	char t[64];
+	size_t n = strlen(host);
+
+	memset(a, 0, sizeof(*a));
+	if ( family != 6 && inet_pton(AF_INET, host, a->addr) == 1 ) {
+		a->len = 4;
+		return true;
 	}
-	return true;
+	if ( n >= 2 && host[0] == '[' && host[n - 1] == ']' && n - 2 < sizeof(t) ) {
+		memcpy(t, host + 1, n - 2);
+		t[n - 2] = 0;
+		host = t;
+	}
+	if ( family != 4 && strchr(host, '%') == nullptr && inet_pton(AF_INET6, host, a->addr) == 1 ) {
+		a->len = 16;
+		return true;
+	}
+	return false;
 }
 
-bool system_lookup( const char *host, unsigned char *ip4 )
+/* The addresses of a name from the system, in its order; how many, 0 for none */
+int system_lookup( const char *host, int family, BrAddr *out )
 {
-	struct addrinfo hints, *res = nullptr;
+	struct addrinfo hints, *res = nullptr, *ai;
+	int n = 0;
 
 	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_INET;
+	hints.ai_family = ( family == 4 ) ? AF_INET : ( family == 6 ) ? AF_INET6 : AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
-	if ( getaddrinfo(host, nullptr, &hints, &res) != 0 || res == nullptr ) return false;
-	const struct sockaddr_in *sa = (const struct sockaddr_in *)res->ai_addr;
-	memcpy(ip4, &sa->sin_addr, 4);
+	if ( family == 0 ) hints.ai_flags = AI_ADDRCONFIG;
+	if ( getaddrinfo(host, nullptr, &hints, &res) != 0 || res == nullptr ) return 0;
+	for ( ai = res; ai != nullptr && n < BR_RESOLVE_MAX; ai = ai->ai_next ) {
+		if ( ai->ai_family != AF_INET && ai->ai_family != AF_INET6 ) continue;
+		take_sa((const struct sockaddr_storage *)ai->ai_addr, &out[n], nullptr);
+		n++;
+	}
 	freeaddrinfo(res);
-	return true;
+	return n;
 }
 
 void *lookup_thread( void *arg )
 {
 	Lookup *l = (Lookup *)arg;
-	unsigned char ip4[4];
-	bool ok = system_lookup(l->host, ip4);
+	BrAddr out[BR_RESOLVE_MAX];
+	int n = system_lookup(l->host, l->family, out);
 
 	pthread_mutex_lock(&g_slot_lock);
 	if ( l->state == SLOT_ABANDONED ) {
 		l->state = SLOT_FREE;
 	} else {
-		memcpy(l->ip4, ip4, 4);
-		l->state = ok ? SLOT_DONE : SLOT_FAILED;
+		memcpy(l->out, out, sizeof(BrAddr) * (size_t)n);
+		l->n = n;
+		l->state = ( n > 0 ) ? SLOT_DONE : SLOT_FAILED;
 	}
 	pthread_mutex_unlock(&g_slot_lock);
 	return nullptr;
@@ -253,19 +353,25 @@ void *lookup_thread( void *arg )
 
 extern "C" {
 
-int br_stream_resolve_start( const char *host, unsigned char *ip4 )
+int br_stream_resolve_start( const char *host, int family, BrAddr *out, int *n )
 {
-	if ( parse_quad(host, ip4) ) return -2;
+	if ( parse_number(host, family, &out[0]) ) {
+		*n = 1;
+		return -2;
+	}
 	pthread_mutex_lock(&g_slot_lock);
 	int i;
 	for ( i = 0; i < kSlots && g_slots[i].state != SLOT_FREE; i++ ) ;
 	if ( i == kSlots ) {
 		pthread_mutex_unlock(&g_slot_lock);
 		/* every slot busy: looked up here */
-		return system_lookup(host, ip4) ? -2 : -1;
+		*n = system_lookup(host, family, out);
+		return ( *n > 0 ) ? -2 : -1;
 	}
 	Lookup *l = &g_slots[i];
 	snprintf(l->host, sizeof(l->host), "%s", host);
+	l->family = family;
+	l->n = 0;
 	l->state = SLOT_LOOKING;
 	pthread_mutex_unlock(&g_slot_lock);
 
@@ -277,23 +383,24 @@ int br_stream_resolve_start( const char *host, unsigned char *ip4 )
 	int rc = pthread_create(&th, &a, lookup_thread, l);
 	pthread_attr_destroy(&a);
 	if ( rc != 0 ) {
-		bool ok = system_lookup(host, ip4);
+		*n = system_lookup(host, family, out);
 		pthread_mutex_lock(&g_slot_lock);
 		l->state = SLOT_FREE;
 		pthread_mutex_unlock(&g_slot_lock);
-		return ok ? -2 : -1;
+		return ( *n > 0 ) ? -2 : -1;
 	}
 	return i;
 }
 
-int br_stream_resolve_poll( int slot, unsigned char *ip4 )
+int br_stream_resolve_poll( int slot, BrAddr *out, int *n )
 {
 	if ( slot < 0 || slot >= kSlots ) return -1;
 	pthread_mutex_lock(&g_slot_lock);
 	Lookup *l = &g_slots[slot];
 	int r = 0;
 	if ( l->state == SLOT_DONE ) {
-		memcpy(ip4, l->ip4, 4);
+		memcpy(out, l->out, sizeof(BrAddr) * (size_t)l->n);
+		*n = l->n;
 		l->state = SLOT_FREE;
 		r = 1;
 	} else if ( l->state == SLOT_FAILED ) {
@@ -322,11 +429,15 @@ void br_stream_resolve_cancel( int slot )
 /* ---------------------------------------------------------------- the network thread */
 
 /*
- * The network stack runs on a thread of its own: every ten milliseconds,
- * or at once when it is handed work, it moves the sockets and runs what
- * the stack has due. On the page's thread it would wait whenever the
- * page is busy (a script, a collection, a long layout), and every
- * connection with it.
+ * The network stack runs on a thread of its own. Between its turns it
+ * waits in one poll on every socket the stack has parked a read or a
+ * write on and on a datagram socket of its own on the loopback, which
+ * another thread writes to when it hands work over; the wait ends no
+ * later than the stack's next timer. A datagram that arrives, a
+ * connection that is made or work that is handed over is taken up at
+ * once, not at the next tick of a clock. On the page's thread the stack
+ * would wait whenever the page is busy (a script, a collection, a long
+ * layout), and every connection with it.
  */
 
 extern "C" void br_net_thread_turn( void );
@@ -341,6 +452,15 @@ int g_wake = -1;
 volatile int g_net_up = 0;
 pthread_t g_net_th;
 
+/* The socket the network thread is woken through, and its own address */
+int g_wake_fd = -1;
+struct sockaddr_in g_wake_to;
+/* Set from a wake until the network thread has taken it: one datagram for many hand-overs */
+volatile int g_wake_sent = 0;
+
+/* The longest wait: what nothing wakes the thread for is looked at this often */
+constexpr int kWaitMaxMs = 100;
+
 struct timespec after_ms( int ms )
 {
 	struct timespec t;
@@ -354,11 +474,121 @@ struct timespec after_ms( int ms )
 	return t;
 }
 
+/* The socket to be woken through: bound to the loopback at a port of the system's choosing */
+void make_wake_socket( void )
+{
+	int fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
+	if ( fd < 0 ) return;
+	struct sockaddr_in a;
+	socklen_t len = sizeof(a);
+	memset(&a, 0, sizeof(a));
+	a.sin_family = AF_INET;
+	a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if ( bind(fd, (struct sockaddr *)&a, sizeof(a)) < 0
+	     || getsockname(fd, (struct sockaddr *)&a, &len) < 0 ) {
+		close(fd);
+		return;
+	}
+	g_wake_to = a;
+	g_wake_fd = fd;
+}
+
+/*
+ * The watches of the TCP streams and the datagram sockets into w, all of
+ * them: a list they fill is made twice as long and filled again, as the
+ * two say no more than how many went in
+ */
+constexpr size_t kWatchFirst = 64;
+
+size_t take_watches( std::vector<BrWatch> &w )
+{
+	if ( w.size() < kWatchFirst ) w.resize(kWatchFirst);
+	for ( ;; ) {
+		const int room = (int)w.size();
+		const int t = br_tcp_watches(w.data(), room);
+		if ( t < room ) {
+			const int u = br_udp_watches(w.data() + t, room - t);
+			if ( t + u < room ) return (size_t)( t + u );
+		}
+		w.resize(w.size() * 2);
+	}
+}
+
+/*
+ * Waits until a parked socket is ready, work is handed over or the
+ * stack's next timer is due, and keeps what the wait found for the turn
+ * that follows (g_seen). Every socket watched is in the one wait, once,
+ * with what each of its watches asks for.
+ */
+void wait_for_work( void )
+{
+	static std::vector<BrWatch>		w;
+	static std::vector<struct pollfd>	p;
+	size_t	n = take_watches(w), m = 0;
+
+	long due = br_net_due_in_ms();
+	int ms = ( due < 0 || due > kWaitMaxMs ) ? kWaitMaxMs : (int)due;
+	g_nseen = 0;
+	if ( g_wake_fd < 0 ) {
+		/*
+		 * No socket to be woken through: the semaphore br_net_wake posts.
+		 * Sockets it cannot be waited for with are looked at every ten
+		 * milliseconds; with none, the wait is until the work or the
+		 * timer due.
+		 */
+		if ( n > 0 && ms > 10 ) ms = 10;
+		if ( ms > 0 ) (void)br_sem_wait_ms(g_wake, ms);
+		return;
+	}
+	std::sort(w.begin(), w.begin() + (long)n,
+		  []( const BrWatch &a, const BrWatch &b ) { return a.fd < b.fd; });
+	if ( p.size() < n + 1 ) p.resize(n + 1);
+	p[m].fd = g_wake_fd;
+	p[m].events = POLLIN;
+	p[m].revents = 0;
+	m++;
+	for ( size_t i = 0; i < n; i++ ) {
+		short ev = (short)( ( ( w[i].events & BR_WATCH_READ ) ? POLLIN : 0 )
+				  | ( ( w[i].events & BR_WATCH_WRITE ) ? POLLOUT : 0 ) );
+		if ( m > 1 && p[m - 1].fd == w[i].fd ) {
+			p[m - 1].events |= ev;
+			continue;
+		}
+		p[m].fd = w[i].fd;
+		p[m].events = ev;
+		p[m].revents = 0;
+		m++;
+	}
+	__sync_synchronize();
+	if ( g_wake_sent ) ms = 0;
+	int rv = poll(p.data(), (nfds_t)m, ms);
+	if ( rv < 0 ) {
+		/* the wait refused: a short wait on the wake alone, the sockets looked at in the turn */
+		rv = poll(p.data(), 1, ( ms > 10 ) ? 10 : ms);
+		m = 1;
+	}
+	if ( rv > 0 && ( p[0].revents & POLLIN ) != 0 ) {
+		char b[16];
+		while ( recv(g_wake_fd, b, sizeof(b), MSG_DONTWAIT) > 0 ) ;
+	}
+	/* work handed over from here on wakes the next wait; what came before runs in the turn that follows */
+	__sync_lock_release(&g_wake_sent);
+	if ( rv < 0 ) return;
+	if ( g_seen.size() < m ) g_seen.resize(m);
+	for ( size_t j = 1; j < m; j++ ) {
+		g_seen[g_nseen].fd = p[j].fd;
+		g_seen[g_nseen].asked = p[j].events;
+		g_seen[g_nseen].got = p[j].revents;
+		g_nseen++;
+	}
+}
+
 void *net_thread( void * )
 {
 	for ( ;; ) {
-		(void)br_sem_wait_ms(g_wake, 10);
+		wait_for_work();
 		br_net_thread_turn();
+		g_nseen = 0;
 	}
 	return nullptr;
 }
@@ -367,11 +597,15 @@ void *net_thread( void * )
 
 extern "C" {
 
-int br_net_thread_start( void )
+int br_net_thread_start( int stack )
 {
 	if ( g_net_up ) return 0;
 	g_wake = br_sem_new();
 	if ( g_wake < 0 ) return -1;
+	if ( stack ) {
+		make_wake_socket();
+		if ( g_wake_fd < 0 ) printf("browser: net: no socket to wake the network thread; it looks every 10 ms\n");
+	}
 	pthread_attr_t a;
 	pthread_attr_init(&a);
 	pthread_attr_setstacksize(&a, 8 * 1024 * 1024);
@@ -398,6 +632,12 @@ int br_on_net_thread( void )
 
 void br_net_wake( void )
 {
+	if ( g_wake_fd >= 0 ) {
+		if ( __sync_bool_compare_and_swap(&g_wake_sent, 0, 1) ) {
+			(void)sendto(g_wake_fd, "w", 1, MSG_DONTWAIT, (struct sockaddr *)&g_wake_to, sizeof(g_wake_to));
+		}
+		return;
+	}
 	if ( g_wake >= 0 ) br_sem_post(g_wake);
 }
 

@@ -1,0 +1,18 @@
+--- a/base/memory/shared_memory_tracker.cc
++++ b/base/memory/shared_memory_tracker.cc
+@@ -59,7 +59,15 @@
+     const SharedMemoryMapping& mapping) {
+   AutoLock hold(usages_lock_);
+   const auto it = usages_.find(mapping.mapped_memory().data());
++#if defined(__TESSRONOS__)
++  // Every mapping of a region is at the same address here (the memory
++  // objects of memfd_create): the second one let go finds the entry gone.
++  if (it == usages_.end()) {
++    return;
++  }
++#else
+   CHECK(it != usages_.end());
++#endif
+   usages_.erase(it);
+ }
+ 

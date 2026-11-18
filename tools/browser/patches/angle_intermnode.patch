@@ -1,0 +1,12 @@
+--- a/third_party/angle/src/compiler/translator/IntermNode.cpp
++++ b/third_party/angle/src/compiler/translator/IntermNode.cpp
+@@ -880,7 +880,8 @@
+         // http://crbug.com/498400132
+         angle::base::CheckedNumeric<size_t> checkedArraySize = elementSize;
+         checkedArraySize *= getOutermostArraySize();
+-        constArray = new TConstantUnion[checkedArraySize.ValueOrDie()];
++        // gcc does not deduce the conversion of the checked number to an array size
++        constArray = new TConstantUnion[static_cast<size_t>(checkedArraySize.ValueOrDie())];
+
+         size_t elementOffset = 0u;
+         for (TIntermNode *constructorArg : mArguments)

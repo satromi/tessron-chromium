@@ -1,0 +1,86 @@
+--- a/v8/src/wasm/interpreter/wasm-interpreter.h
++++ b/v8/src/wasm/interpreter/wasm-interpreter.h
+@@ -1934,49 +1934,43 @@
+     return slot_index;
+   }
+ 
++  // One template for every type, the caches chosen at compile time: gcc
++  // takes no explicit specialization inside a class.
+   template <typename T>
+   inline std::optional<uint32_t> GetConstSlot(T value) {
+-    UNREACHABLE();
+-  }
+-  template <>
+-  inline std::optional<uint32_t> GetConstSlot<int32_t>(int32_t value) {
+-    auto it = i32_const_cache_.find(value);
+-    if (it != i32_const_cache_.end()) {
+-      return std::optional<uint32_t>(it->second);
+-    }
+-    return std::nullopt;
+-  }
+-  template <>
+-  inline std::optional<uint32_t> GetConstSlot<int64_t>(int64_t value) {
+-    auto it = i64_const_cache_.find(value);
+-    if (it != i64_const_cache_.end()) {
+-      return std::optional<uint32_t>(it->second);
+-    }
+-    return std::nullopt;
+-  }
+-  template <>
+-  inline std::optional<uint32_t> GetConstSlot<float>(float value) {
+-    auto it = f32_const_cache_.find(base::bit_cast<uint32_t>(value));
+-    if (it != f32_const_cache_.end()) {
+-      return std::optional<uint32_t>(it->second);
+-    }
+-    return std::nullopt;
+-  }
+-  template <>
+-  inline std::optional<uint32_t> GetConstSlot<double>(double value) {
+-    auto it = f64_const_cache_.find(base::bit_cast<uint64_t>(value));
+-    if (it != f64_const_cache_.end()) {
+-      return std::optional<uint32_t>(it->second);
+-    }
+-    return std::nullopt;
+-  }
+-  template <>
+-  inline std::optional<uint32_t> GetConstSlot<Simd128>(Simd128 value) {
+-    auto it = s128_const_cache_.find(reinterpret_cast<Simd128&>(value));
+-    if (it != s128_const_cache_.end()) {
+-      return std::optional<uint32_t>(it->second);
++    if constexpr (std::is_same_v<T, int32_t>) {
++      auto it = i32_const_cache_.find(value);
++      if (it != i32_const_cache_.end()) {
++        return std::optional<uint32_t>(it->second);
++      }
++      return std::nullopt;
++    } else if constexpr (std::is_same_v<T, int64_t>) {
++      auto it = i64_const_cache_.find(value);
++      if (it != i64_const_cache_.end()) {
++        return std::optional<uint32_t>(it->second);
++      }
++      return std::nullopt;
++    } else if constexpr (std::is_same_v<T, float>) {
++      auto it = f32_const_cache_.find(base::bit_cast<uint32_t>(value));
++      if (it != f32_const_cache_.end()) {
++        return std::optional<uint32_t>(it->second);
++      }
++      return std::nullopt;
++    } else if constexpr (std::is_same_v<T, double>) {
++      auto it = f64_const_cache_.find(base::bit_cast<uint64_t>(value));
++      if (it != f64_const_cache_.end()) {
++        return std::optional<uint32_t>(it->second);
++      }
++      return std::nullopt;
++    } else if constexpr (std::is_same_v<T, Simd128>) {
++      auto it = s128_const_cache_.find(reinterpret_cast<Simd128&>(value));
++      if (it != s128_const_cache_.end()) {
++        return std::optional<uint32_t>(it->second);
++      }
++      return std::nullopt;
++    } else {
++      UNREACHABLE();
+     }
+-    return std::nullopt;
+   }
+ 
+   template <typename T>

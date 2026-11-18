@@ -9,8 +9,8 @@
 
 /*
  *	linux/memfd.h
- *	The flags of memfd_create, which fails on TessronOS (there is no file
- *	made of anonymous memory; lib/libcxxrt/ts_mman.c).
+ *	The flags of memfd_create, which on TessronOS makes a memory object of
+ *	the process (lib/libcxxrt/ts_mman.c); the flags are not looked at.
  */
 
 #ifndef __TS_LINUX_MEMFD_H__

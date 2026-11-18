@@ -1,0 +1,17 @@
+third_party/angle/src/libANGLE/renderer/gl/glx/
+third_party/angle/src/libANGLE/renderer/vulkan/
+third_party/angle/src/libANGLE/renderer/null/
+third_party/angle/src/compiler/translator/spirv/
+third_party/angle/src/compiler/translator/msl/
+third_party/angle/src/compiler/translator/hlsl/
+third_party/angle/src/libGLESv2/libGLESv2_autogen.cpp
+third_party/angle/src/libEGL/
+third_party/angle/src/tests/
+third_party/angle/util/
+third_party/angle/src/gpu_info_util/SystemInfo_x11.cpp
+third_party/angle/src/gpu_info_util/SystemInfo_vulkan.cpp
+third_party/angle/src/gpu_info_util/SystemInfo_libpci.cpp
+third_party/angle/src/libANGLE/renderer/wgpu/WindowSurfaceWgpuX11
+ui/gl/gl_surface_egl_x11
+ui/gl/gl_fence_android
+third_party/angle/src/libANGLE/renderer/wgpu/linux/

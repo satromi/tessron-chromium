@@ -1,0 +1,99 @@
+--- a/gpu/command_buffer/service/raster_decoder.cc
++++ b/gpu/command_buffer/service/raster_decoder.cc
+@@ -7,6 +7,7 @@
+ #include <stdint.h>
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <array>
+ #include <cstdint>
+ #include <memory>
+@@ -138,6 +139,38 @@
+ namespace gpu {
+ namespace raster {
+ 
++// What the raster's commands took in this process, for the embedder's
++// console: the rasters ended, the microseconds of their records played
++// and of their flushes; the readbacks, the waits for the drawing to
++// finish before them and their copies.
++std::atomic<int64_t> g_raster_work[6];
++
++// What the readbacks were, for the same console: the readbacks, their
++// pixels, the microseconds of glReadPixels in them (counted by the
++// embedder's wrapper of the GL's function while g_in_readback is set),
++// those whose source is BGRA and those whose destination is BGRA.
++std::atomic<int64_t> g_readback_work[5];
++thread_local bool g_in_readback = false;
++
++namespace {
++
++// Adds the microseconds of its scope to a count of g_raster_work.
++class ScopedWorkTime {
++ public:
++  explicit ScopedWorkTime(int which)
++      : which_(which), start_(base::TimeTicks::Now()) {}
++  ~ScopedWorkTime() {
++    g_raster_work[which_] +=
++        (base::TimeTicks::Now() - start_).InMicroseconds();
++  }
++
++ private:
++  const int which_;
++  const base::TimeTicks start_;
++};
++
++}  // namespace
++
+ namespace {
+ 
+ base::AtomicSequenceNumber g_raster_decoder_id;
+@@ -2420,11 +2453,32 @@
+   gl::ScopedProgressReporter report_progress(
+       shared_context_state_->progress_reporter());
+ 
++  // The drawing waited for apart from the copy, as the readback would wait
++  // for it anyway.
++  {
++    ScopedWorkTime finish_time(4);
++    gl::GLApi* const api = gl::g_current_gl_context;
++    if (api) {
++      api->glFinishFn();
++    }
++  }
++  g_raster_work[3]++;
++  ScopedWorkTime copy_time(5);
++  g_readback_work[0]++;
++  g_readback_work[1] += static_cast<int64_t>(dst_width) * dst_height;
++  if (source_format == viz::SinglePlaneFormat::kBGRA_8888) {
++    g_readback_work[3]++;
++  }
++  if (dst_info.colorType() == kBGRA_8888_SkColorType) {
++    g_readback_work[4]++;
++  }
+   CopySharedImageHelper helper(&shared_image_representation_factory_,
+                                shared_context_state_.get());
++  g_in_readback = true;
+   auto helper_result =
+       helper.ReadPixels(src_x, src_y, plane_index, row_bytes, dst_info,
+                         pixel_address, std::move(source_shared_image));
++  g_in_readback = false;
+   if (!helper_result.has_value()) {
+     LOCAL_SET_GL_ERROR(helper_result.error().gl_error,
+                        helper_result.error().function_name.c_str(),
+@@ -2964,6 +3018,7 @@
+                                          GLuint font_shm_size) {
+   TRACE_EVENT1("gpu", "RasterDecoderImpl::DoRasterCHROMIUM", "raster_id",
+                ++raster_chromium_id_);
++  ScopedWorkTime work_time(1);
+ 
+   if (!sk_surface_ && !scoped_shared_image_raster_write_) {
+     LOCAL_SET_GL_ERROR(GL_INVALID_OPERATION, "glRasterCHROMIUM",
+@@ -3055,6 +3110,8 @@
+ 
+ void RasterDecoderImpl::DoEndRasterCHROMIUM() {
+   TRACE_EVENT0("gpu", "RasterDecoderImpl::DoEndRasterCHROMIUM");
++  ScopedWorkTime work_time(2);
++  g_raster_work[0]++;
+   if (!sk_surface_ && !scoped_shared_image_raster_write_) {
+     LOCAL_SET_GL_ERROR(GL_INVALID_OPERATION, "glEndRasterCHROMIUM",
+                        "EndRasterCHROMIUM without BeginRasterCHROMIUM");

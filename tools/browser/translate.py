@@ -20,8 +20,16 @@
 # with its first errors. --exclude-list names sources the port replaces or
 # leaves out, one path fragment per line. A source with a patch in
 # tools/browser/patches (a unified diff against the checkout, paths from
-# its root) is compiled from a patched copy under $OBJ/_patched; the
-# checkout itself is never changed.
+# its root) is compiled from a patched copy under $OBJ/_patched, and a
+# patched header is found in $OBJ/_patched_inc before the checkout; the
+# checkout itself is never changed. TRANSLATE_TUNE gives the compiler
+# flags that change how it runs and not what it makes (its memory), left
+# out of what decides whether an object is current.
+#
+# TS_ARCH=x86_64 compiles the x86-64 build described by args_x64.gn
+# ($CR/out/tessronos_x64) with the x86_64-elf toolchain into
+# ~/tessronos-obj-x64, reading port/shim_x64 before port/shim. Without it
+# the commands are those of aarch64, unchanged.
 
 import argparse
 import concurrent.futures as cf
@@ -38,6 +46,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # this repository (tessron-chromium) and the TessronOS tree it is built into
 BR = os.path.dirname(os.path.dirname(HERE))
 TS = os.environ.get('TESSRONOS') or os.path.join(os.path.dirname(BR), 'TessronOS')
+X64 = os.environ.get('TS_ARCH', 'aarch64') == 'x86_64'
 
 # Flags of the gn command line that belong to the compilers and system it
 # was written for.
@@ -47,6 +56,11 @@ DROP_PREFIX = ('-fstack-protector', '-fPIC', '-fPIE', '-fpic', '-fpie', '-pthrea
                '-fdebug-compilation-dir', '-no-canonical-prefixes', '-mno-outline-atomics',
                '-moutline-atomics', '-fuse-ld', '-Werror', '-D_GLIBCXX_ASSERTIONS',
                '-D_LIBCPP_')
+# On x86-64 the processor a source is built for is gn's to say: a source
+# of a routine chosen at run time (AVX2, AVX-512) is given its -march, the
+# rest none, and the TessronOS level (x86-64-v2) stands before it
+if X64:
+    DROP_PREFIX = tuple(p for p in DROP_PREFIX if p not in ('-march=', '-mtune='))
 DROP_EXACT = ('-c', '-MD', '-MMD', '-pipe')
 DROP_WITH_ARG = ('-o', '-MF', '-MT', '-MQ', '-target', '--target')
 
@@ -71,9 +85,12 @@ def local_includes(a):
     made from them stay.
     """
     dst = os.path.join(a.obj, '_inc')
-    for name, src in (('shim', a.shim),
-                      ('tscxx', os.path.join(TS, 'include', 'tscxx')),
-                      ('tsposix', os.path.join(TS, 'include', 'tsposix'))):
+    dirs = [('shim', a.shim),
+            ('tscxx', os.path.join(TS, 'include', 'tscxx')),
+            ('tsposix', os.path.join(TS, 'include', 'tsposix'))]
+    if X64:
+        dirs.append(('shim_x64', a.shim + '_x64'))
+    for name, src in dirs:
         d = os.path.join(dst, name)
         os.makedirs(d, exist_ok=True)
         r = subprocess.run(['rsync', '-r', '--delete', '--checksum', '--out-format=%n',
@@ -85,13 +102,28 @@ def local_includes(a):
                 os.path.relpath(f, dst), ' (names added only)' if a.additive else ''))
             if a.additive:
                 os.utime(f, (INC_TIME, INC_TIME))
-    return os.path.join(dst, 'shim'), os.path.join(dst, 'tscxx'), os.path.join(dst, 'tsposix')
+    return tuple(os.path.join(dst, name) for name, _ in dirs)
 
 
 INCS = None
 
 
 def target_flags(shim):
+    if X64:
+        shim, tscxx, tsposix, shim_x64 = INCS
+        return [
+            '-march=x86-64-v2', '-mtune=generic',
+            '-fno-stack-protector', '-ffunction-sections', '-fdata-sections',
+            '-D__linux__', '-D__linux', '-Dlinux', '-D__unix__', '-D__unix', '-Dunix',
+            '-D_GNU_SOURCE', '-D_POSIX_TIMERS=1', '-D_POSIX_MONOTONIC_CLOCK=200112L',
+            '-D_POSIX_PRIORITY_SCHEDULING=1', '-D_POSIX_CLOCK_SELECTION=200112L',
+            '-D__TESSRONOS__=1', '-DABSL_FORCE_WAITER_MODE=2',
+            '-I' + shim_x64,
+            '-I' + shim,
+            '-I' + tscxx,
+            '-I' + tsposix,
+            '-include', os.path.join(shim, 'ts_compat.h'),
+        ]
     shim, tscxx, tsposix = INCS
     return [
         '-march=armv8.2-a', '-mtune=cortex-a76', '-mno-outline-atomics',
@@ -110,8 +142,9 @@ def target_flags(shim):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--cr', default=os.path.join(HOME, 'cr6', 'src'))
-    p.add_argument('--out', default='tessronos', help='gn output directory under $CR/out')
-    p.add_argument('--obj', default=os.path.join(HOME, 'tessronos-obj'))
+    p.add_argument('--out', default='tessronos_x64' if X64 else 'tessronos',
+                   help='gn output directory under $CR/out')
+    p.add_argument('--obj', default=os.path.join(HOME, 'tessronos-obj-x64' if X64 else 'tessronos-obj'))
     p.add_argument('--label', action='append', default=[],
                    help='gn label whose objects are compiled (repeatable)')
     p.add_argument('--labels-file', help='file of gn labels, one per line')
@@ -120,7 +153,8 @@ def parse_args():
                    help='files of path fragments left out (repeatable; exclude.txt always)')
     p.add_argument('--shim', default=os.path.join(BR, 'application', 'browser', 'port', 'shim'))
     p.add_argument('--xpack', default=os.environ.get(
-        'TS_TOOLCHAIN', os.path.join(HOME, '.local', 'xPacks', 'aarch64-none-elf-gcc', 'bin')))
+        'TS_TOOLCHAIN', os.path.join(HOME, '.local', 'xPacks',
+                                     'x86_64-elf-gcc' if X64 else 'aarch64-none-elf-gcc', 'bin')))
     p.add_argument('--jobs', type=int, default=4)
     p.add_argument('--list', action='store_true', help='print what would be compiled')
     p.add_argument('--objlist', help='write the list of objects here')
@@ -144,16 +178,23 @@ def parse_args():
     p.add_argument('--patches', default=os.path.join(HERE, 'patches'))
     p.add_argument('--flags-file', default=os.path.join(HERE, 'flags.txt'),
                    help='lines "PATH-FRAGMENT FLAG...": flags added for the sources it '
-                        'names; {TS} stands for the TessronOS tree')
+                        'names; {TS} stands for the TessronOS tree, {BR} for this one, {OBJ} for --obj')
     return p.parse_args()
 
 
+HEADER_EXT = ('.h', '.hpp', '.inc')
+
+
 def patched_sources(a):
-    """{source path relative to the checkout: patched copy} for every patch."""
+    """{source path relative to the checkout: patched copy} for every patch.
+
+    A patched header goes to a tree of its own ($OBJ/_patched_inc), which
+    is looked in before the checkout (see header_includes); the headers
+    patched are left in PATCHED_HEADERS.
+    """
     out = {}
     if not os.path.isdir(a.patches):
         return out
-    root = os.path.join(a.obj, '_patched')
     for name in sorted(os.listdir(a.patches)):
         if not name.endswith('.patch'):
             continue
@@ -162,8 +203,12 @@ def patched_sources(a):
                    if l.startswith('+++ ')]
         for t in targets:
             rel = t[2:] if t.startswith(('a/', 'b/')) else t
+            header = rel.endswith(HEADER_EXT)
+            root = os.path.join(a.obj, '_patched_inc' if header else '_patched')
             src = os.path.join(a.cr, rel)
             dst = os.path.join(root, rel)
+            if header:
+                PATCHED_HEADERS.append(rel)
             stamp = dst + '.stamp'
             key = hashlib.sha1(open(pf, 'rb').read() + open(src, 'rb').read()).hexdigest()
             if not (os.path.exists(stamp) and open(stamp).read() == key):
@@ -173,24 +218,59 @@ def patched_sources(a):
                 subprocess.run(['patch', '-s', '-p1', '-d', root, '-i', pf], check=True)
                 with open(stamp, 'w') as f:
                     f.write(key)
-            out[rel] = dst
+            if not header:
+                out[rel] = dst
+    return out
+
+
+PATCHED_HEADERS = []
+
+
+def header_includes(toks, a):
+    """The include directories of the patched headers, for a command.
+
+    For each directory the command looks in (other than the checkout's
+    root) under which a patched header lies, the same directory of the
+    patched tree is put before it, so that the header is found there
+    first. Commands that cannot reach a patched header are unchanged.
+    """
+    if not PATCHED_HEADERS:
+        return toks
+    cwd = os.path.join(a.cr, 'out', a.out)
+    out = []
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        d = None
+        if t == '-I' and i + 1 < len(toks):
+            d = toks[i + 1]
+        elif t.startswith('-I') and len(t) > 2:
+            d = t[2:]
+        if d is not None:
+            rel = os.path.relpath(os.path.normpath(os.path.join(cwd, d)), a.cr)
+            if rel != '.' and not rel.startswith('..') and any(
+                    h.startswith(rel + '/') for h in PATCHED_HEADERS):
+                out.append('-I' + os.path.join(a.obj, '_patched_inc', rel))
+        out.append(t)
+        i += 1
     return out
 
 
 PATCHED = {}
 FILE_FLAGS = []
+TUNE = os.environ.get('TRANSLATE_TUNE', '').split()
 ERRLINES = int(os.environ.get('TRANSLATE_ERRLINES', '6'))
 RELAXED_WHEN = ('[-Wchanges-meaning]', '[-fpermissive]', '[-Wtemplate-body]')
 RELAXED = ['-fpermissive', '-Wno-changes-meaning', '-Wno-template-body']
 
 
-def load_file_flags(path):
+def load_file_flags(path, obj):
     out = []
     if path and os.path.exists(path):
         for line in open(path, encoding='utf-8'):
             line = line.split('#', 1)[0].split()
             if len(line) >= 2:
-                out.append((line[0], [f.replace('{TS}', TS) for f in line[1:]]))
+                out.append((line[0], [f.replace('{TS}', TS).replace('{OBJ}', obj).replace('{BR}', BR) for f in line[1:]]))
     return out
 
 
@@ -244,11 +324,13 @@ def translate(entry, a):
         return None
     rel = os.path.normpath(os.path.join(os.path.join(a.cr, 'out', a.out), src))
     rel = os.path.relpath(rel, a.cr)
+    toks = header_includes(toks, a)
     if rel in PATCHED:
         # quoted includes are looked for beside the original first
         toks = ['-iquote', os.path.dirname(os.path.join(a.cr, rel))] + toks
         src = PATCHED[rel]
-    cc = os.path.join(a.xpack, 'aarch64-none-elf-gcc' if (is_c or is_asm) else 'aarch64-none-elf-g++')
+    cross = 'x86_64-elf-' if X64 else 'aarch64-none-elf-'
+    cc = os.path.join(a.xpack, cross + ('gcc' if (is_c or is_asm) else 'g++'))
     obj = os.path.join(a.obj, a.out, out)
     extra = [f for frag, fl in FILE_FLAGS if frag in entry['file'] for f in fl]
     argv = [cc] + target_flags(a.shim) + toks + extra + ['-c', src, '-o', obj]
@@ -283,7 +365,9 @@ def compile_one(job):
             pass
     os.makedirs(os.path.dirname(obj), exist_ok=True)
     src = argv[argv.index('-c') + 1]
-    argv = argv + ['-MD', '-MF', obj + '.d']
+    # flags that change how the compiler runs, not what it makes (its
+    # memory, TRANSLATE_TUNE): left out of the command's key above
+    argv = argv + TUNE + ['-MD', '-MF', obj + '.d']
     r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, errors='replace')
     if r.returncode != 0 and any(w in r.stderr for w in RELAXED_WHEN):
         # what gcc refuses and the compiler the sources are written for
@@ -320,6 +404,26 @@ def unity_group_key(argv):
     """The command of a source without the source and the object."""
     i = argv.index('-c')
     return '\0'.join(argv[:i] + argv[i + 2:-2])
+
+
+PACK_SET = re.compile(rb'#\s*pragma\s+pack\s*\(\s*\d')
+
+
+def packs_alone(path):
+    """Whether a source sets the packing of structures and leaves it set.
+
+    WebRTC's wav_header.cc says #pragma pack(2) and never takes it back:
+    in a unit, the sources after it lay out their structures packed, and
+    differently from every other translation unit (on x86-64 that unit
+    held GenericFrameInfo's constructor). Such a source is compiled alone.
+    It is told by its text: a #pragma pack with a number, and no pop
+    anywhere in the file.
+    """
+    try:
+        text = open(path, 'rb').read()
+    except OSError:
+        return False
+    return PACK_SET.search(text) is not None and b'pop' not in text
 
 
 def unity_jobs(jobs, a):
@@ -361,6 +465,15 @@ def unity_jobs(jobs, a):
         members.sort(key=lambda j: j[0])
         for k in range(0, len(members), a.unity):
             chunk = members[k:k + a.unity]
+            # a source that leaves the packing set is taken out of its unit
+            # and compiled alone; the units are cut as before, so that no
+            # other unit changes
+            alone = [j for j in chunk if packs_alone(os.path.join(j[2], j[1][j[1].index('-c') + 1]))]
+            if alone:
+                out.extend(alone)
+                chunk = [j for j in chunk if j not in alone]
+                if not chunk:
+                    continue
             if len(chunk) == 1:
                 out.append(chunk[0])
                 continue
@@ -413,7 +526,10 @@ def main():
     a = parse_args()
     INCS = local_includes(a)
     PATCHED = patched_sources(a)
-    FILE_FLAGS[:] = load_file_flags(a.flags_file)
+    FILE_FLAGS[:] = load_file_flags(a.flags_file, a.obj)
+    if X64:
+        # the flags and the sources left out that are x86-64's own
+        FILE_FLAGS.extend(load_file_flags(os.path.join(HERE, 'flags_x64.txt'), a.obj))
     cwd = os.path.join(a.cr, 'out', a.out)
     entries = json.load(open(os.path.join(cwd, 'compile_commands.json')))
     labels = list(a.label)
@@ -430,7 +546,8 @@ def main():
         return False
     fpat = re.compile(a.filter) if a.filter else None
     excl = []
-    for f in [os.path.join(HERE, 'exclude.txt')] + a.exclude_list:
+    x64_excl = [os.path.join(HERE, 'exclude_x64.txt')] if X64 else []
+    for f in [os.path.join(HERE, 'exclude.txt')] + x64_excl + a.exclude_list:
         excl += load_exclude(f)
 
     jobs = []

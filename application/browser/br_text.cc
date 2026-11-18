@@ -208,7 +208,8 @@ class TextEngine : public BrEngine {
 public:
 	explicit TextEngine( SkTypeface *face ) : face_(sk_ref_sp(face)) {}
 
-	void load( const std::string &url, const std::string &body, const std::string &charset ) override
+	void load( const std::string &url, const std::string &body, const std::string &charset,
+		   const std::string & ) override
 	{
 		url_ = url;
 		items_.clear();

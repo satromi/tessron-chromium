@@ -1,0 +1,31 @@
+--- a/third_party/blink/renderer/modules/media_capabilities/media_capabilities.cc
++++ b/third_party/blink/renderer/modules/media_capabilities/media_capabilities.cc
+@@ -80,6 +80,9 @@
+ #include "ui/gfx/geometry/rect.h"
+ #include "ui/gfx/geometry/size.h"
+ 
++// Whether the player decodes a picture of this size and rate in time
++extern "C" int br_media_decodes_in_time(int width, int height, double framerate);
++
+ namespace blink {
+ 
+ namespace {
+@@ -1364,8 +1367,17 @@
+     use_hw_secure_codecs = access->UseHardwareSecureCodecs();
+   }
+ 
+-  if (!EnsurePerfHistoryService(execution_context)) {
++  // There is no history of how decoding went to ask (the browser's service
++  // of it is not here): the picture is decoded on the processor, smoothly
++  // up to the size and rate the player keeps up with, and never so as to
++  // save power
++  {
+     MediaCapabilitiesDecodingInfo* info = CreateDecodingInfoWith(true);
++    info->setSmooth(br_media_decodes_in_time(
++        video_config->width(), video_config->height(),
++        video_config->framerate()));
++    info->setPowerEfficient(false);
++    info->setKeySystemAccess(access);
+     resolver->Resolve(WrapPersistent(info));
+     return;
+   }

@@ -1,0 +1,75 @@
+--- a/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc	2026-10-18 14:12:06.628111349 +0900
++++ b/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc	2026-10-18 14:12:06.628894321 +0900
+@@ -120,6 +120,8 @@
+ #include "third_party/blink/renderer/platform/graphics/paint/paint_canvas.h"
+ #include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
+ #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
++#include "third_party/blink/renderer/platform/graphics/unaccelerated_static_bitmap_image.h"
++#include "base/synchronization/lock.h"
+ #include "third_party/blink/renderer/platform/graphics/static_bitmap_image_to_video_frame_copier.h"
+ #include "third_party/blink/renderer/platform/graphics/static_bitmap_image_transform.h"
+ #include "third_party/blink/renderer/platform/graphics/web_graphics_context_3d_video_frame_pool.h"
+@@ -139,6 +141,46 @@
+ 
+ namespace {
+ 
++// The last frame of each placeholder canvas's OffscreenCanvas, by the
++// placeholder's id (offscreen_canvas.cc, PortPushSnapshot)
++base::Lock& PortFramesLock() {
++  static base::Lock* lock = new base::Lock();
++  return *lock;
++}
++
++HashMap<DOMNodeId, sk_sp<SkImage>>& PortFrames() {
++  static auto* frames = new HashMap<DOMNodeId, sk_sp<SkImage>>();
++  return *frames;
++}
++
++sk_sp<SkImage> PortPlaceholderFrame(DOMNodeId id) {
++  base::AutoLock locker(PortFramesLock());
++  auto it = PortFrames().find(id);
++  return it == PortFrames().end() ? nullptr : it->value;
++}
++
++}  // namespace
++
++void PortPlaceholderFramePut(DOMNodeId id, sk_sp<SkImage> image) {
++  base::AutoLock locker(PortFramesLock());
++  PortFrames().Set(id, std::move(image));
++}
++
++// A new frame came for the placeholder: it is painted again with the page
++void PortPlaceholderFrameShow(DOMNodeId id) {
++  OffscreenCanvasPlaceholder* placeholder =
++      OffscreenCanvasPlaceholder::GetPlaceholderCanvasById(id);
++  if (!placeholder) {
++    return;
++  }
++  auto* canvas = static_cast<HTMLCanvasElement*>(placeholder);
++  if (LayoutObject* layout_object = canvas->GetLayoutObject()) {
++    layout_object->SetShouldDoFullPaintInvalidation();
++  }
++}
++
++namespace {
++
+ constexpr unsigned kMaxCanvasAnimationBacklog = 2;
+ 
+ // These two constants determine if a newly created canvas starts with
+@@ -1140,6 +1182,16 @@
+     return;
+   }
+ 
++  // The frames of the OffscreenCanvas this canvas is the placeholder of
++  // (transferControlToOffscreen), painted into the page's own record: there
++  // is no compositor to show them as a layer of their own
++  if (sk_sp<SkImage> frame = PortPlaceholderFrame(GetDomNodeId())) {
++    context.DrawImage(*UnacceleratedStaticBitmapImage::Create(std::move(frame)),
++                      Image::kSyncDecode, ImageAutoDarkMode::Disabled(),
++                      ImagePaintTimingInfo(), gfx::RectF(ToPixelSnappedRect(r)));
++    return;
++  }
++
+   // FIXME: crbug.com/438240; there is a bug with the new CSS blending and
+   // compositing feature.
+   if (!context_ && !HasOffscreenCanvasFrame()) {

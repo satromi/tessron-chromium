@@ -14,16 +14,30 @@ enable_nacl = false
 use_v8_context_snapshot = false
 v8_use_external_startup_data = false
 
-# No executable memory for a process: V8 runs --jitless. The large
-# reservations of the pointer compression cage and the sandbox are not
-# what fails here (ts_map_mem reserves without pages), but they are left
-# out to keep the memory layer of the port small.
-v8_enable_pointer_compression = false
-v8_enable_pointer_compression_shared_cage = false
+# Pointer compression: the cage (4 GB of addresses, ts_map_mem reserves
+# them without pages) is shared by the isolates of the process. The
+# sandbox is left out to keep the memory layer of the port small.
+v8_enable_pointer_compression = true
+v8_enable_pointer_compression_shared_cage = true
 v8_enable_sandbox = false
 v8_enable_external_code_space = false
-v8_enable_temporal_support = false
+# Temporal, as Chrome ships it: V8's builtins over temporal_rs and ICU4X,
+# whose Rust crates (temporal_capi and what it needs) tools/browser/rust.sh
+# builds and links with the rest of the Rust code
+v8_enable_temporal_support = true
+# V8 compiles JavaScript to machine code (Sparkplug, Maglev, Turbofan)
+# and WebAssembly too (Liftoff, Turbofan). The code space is memory
+# written and run by turns (TS_MEM_JIT, the port's OS::SetPermissions):
+# V8 asks for it writable and executable, and the kernel keeps each page
+# one or the other. WebAssembly's memory accesses are kept in bounds by
+# guard pages: the system hands the fault back to the process, and V8's
+# trap handler makes it the module's trap (port/compat/ts_signal.c).
 v8_enable_webassembly = true
+v8_enable_drumbrake = false
+v8_jitless = false
+v8_enable_sparkplug = true
+v8_enable_maglev = true
+v8_enable_turbofan = true
 
 # No pointer authentication or branch targets: the processors TessronOS runs
 # on (Cortex-A76 in QEMU, the Cortex-A76 of the Raspberry Pi 5) have none.
@@ -64,7 +78,24 @@ use_vaapi = false
 use_v4l2_codec = false
 use_custom_libcxx = false
 use_custom_libcxx_for_host = false
-enable_av1_decoder = false
+# AV1 is decoded by dav1d (enable_dav1d_decoder, on for Blink), as in
+# Chrome on Linux: the flag of the decoder is on, so that every part
+# that reads it (canPlayType and isTypeSupported, MediaCapabilities,
+# the parsers of MP4 and WebM for Media Source Extensions, FFmpeg's
+# demuxer) takes AV1 the same way.
+enable_av1_decoder = true
+
+# The media elements play through Chromium's media pipeline: H.264 and AAC
+# (in MP4 and in Media Source Extensions) come with these, decoded by
+# Chromium's FFmpeg built with its codecs; VP8 and VP9 by libvpx, Opus by
+# libopus. HLS presentations are played by the media library's HLS demuxer
+# (port/media/hls_tessronos.cc gives it its data), whose MPEG-2 transport
+# stream segments are read by the parser Media Source Extensions also
+# take video/mp2t with, as in Chrome.
+proprietary_codecs = true
+ffmpeg_branding = "Chrome"
+enable_hls_demuxer = true
+enable_mse_mpeg2ts_stream_parser = true
 use_pangocairo = false
 use_udev = false
 use_dbus = true

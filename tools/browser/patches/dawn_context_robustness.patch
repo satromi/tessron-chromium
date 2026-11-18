@@ -1,0 +1,26 @@
+--- a/third_party/dawn/src/dawn/native/opengl/ContextEGL.cpp
++++ b/third_party/dawn/src/dawn/native/opengl/ContextEGL.cpp
+@@ -205,6 +205,23 @@
+ 
+     mState.context =
+         egl.CreateContext(mDisplay->GetDisplay(), contextConfig, EGL_NO_CONTEXT, attribs.data());
++    if (mState.context == EGL_NO_CONTEXT && useRobustness) {
++        // A driver may list the robustness extension and still refuse a context with robust
++        // access (Mesa's softpipe, which has no reset status). The context is then made without
++        // it: what is out of bounds is still caught by the robustness of the shaders (Tint).
++        absl::InlinedVector<EGLint, 10> plain;
++        for (size_t i = 0; i + 1 < attribs.size(); i += 2) {
++            if (attribs[i] == EGL_CONTEXT_OPENGL_ROBUST_ACCESS ||
++                attribs[i] == EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT) {
++                continue;
++            }
++            plain.push_back(attribs[i]);
++            plain.push_back(attribs[i + 1]);
++        }
++        plain.push_back(EGL_NONE);
++        mState.context =
++            egl.CreateContext(mDisplay->GetDisplay(), contextConfig, EGL_NO_CONTEXT, plain.data());
++    }
+     DAWN_TRY(CheckEGL(egl, mState.context != EGL_NO_CONTEXT, "eglCreateContext"));
+ 
+     // When EGL_KHR_surfaceless_context is not supported, we need to create a pbuffer to act

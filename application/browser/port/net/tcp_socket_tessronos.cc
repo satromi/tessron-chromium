@@ -16,11 +16,15 @@
  *	SocketPosix underneath does the descriptor work, waiting for
  *	readiness with a message pump that watches descriptors. The pump of
  *	the process does not watch sockets, so the lower half is not used
- *	and this stands in for the whole of it: readiness is polled by the
- *	network thread each turn (br_tcp_pump_turn).
+ *	and this stands in for the whole of it: the network thread waits on
+ *	the parked sockets between its turns (br_tcp_watches) and moves the
+ *	ready ones in each turn (br_tcp_pump_turn).
  *
  *	Requests that cannot be served at once are parked with their buffer
- *	and callback and retried. IPv4 only.
+ *	and callback and retried. Sockets are of IPv4 or IPv6, as the
+ *	address they are opened for; the connect job above tries the IPv6
+ *	addresses of a host first and the IPv4 ones a moment after (Happy
+ *	Eyeballs).
  */
 
 #include "net/socket/tcp_socket_posix.h"
@@ -125,22 +129,29 @@ void Drop(const TCPSocketPosix* owner) {
   }
 }
 
-// An endpoint crosses to br_stream as four address bytes and a host-order
-// port. An address that is not IPv4 cannot be carried.
-bool ToBridge(const IPEndPoint& endpoint, unsigned char out[4], int* port) {
+// An endpoint crosses to br_stream as the bytes of its address (four of
+// IPv4, sixteen of IPv6, with the zone of a link-local one) and a
+// host-order port.
+bool ToBridge(const IPEndPoint& endpoint, BrAddr* out, int* port) {
   const IPAddress& address = endpoint.address();
-  if (!address.IsIPv4())
+  if (!address.IsIPv4() && !address.IsIPv6())
     return false;
   const auto bytes = address.bytes();
-  for (int i = 0; i < 4; ++i)
-    out[i] = bytes[i];
+  *out = BrAddr();
+  out->len = static_cast<int>(bytes.size());
+  for (size_t i = 0; i < bytes.size(); ++i)
+    out->addr[i] = bytes[i];
+  out->scope = endpoint.scope_id().value_or(0);
   *port = endpoint.port();
   return true;
 }
 
-IPEndPoint FromBridge(const unsigned char addr[4], int port) {
-  return IPEndPoint(IPAddress(addr[0], addr[1], addr[2], addr[3]),
-                    static_cast<uint16_t>(port));
+IPEndPoint FromBridge(const BrAddr& a, int port) {
+  const IPAddress address(base::span<const uint8_t>(a.addr, static_cast<size_t>(a.len)));
+  std::optional<uint32_t> scope;
+  if (a.len == 16 && a.scope != 0 && address.IsLinkLocal())
+    scope = a.scope;
+  return IPEndPoint(address, static_cast<uint16_t>(port), scope);
 }
 
 int MapBridgeResult(int rv) {
@@ -191,12 +202,12 @@ TCPSocketPosix::~TCPSocketPosix() {
 }
 
 int TCPSocketPosix::Open(AddressFamily family) {
-  if (family != ADDRESS_FAMILY_IPV4)
+  if (family != ADDRESS_FAMILY_IPV4 && family != ADDRESS_FAMILY_IPV6)
     return ERR_ADDRESS_INVALID;
   Stream& s = FindOrAdd(this);
   if (s.fd >= 0)
     return ERR_UNEXPECTED;
-  s.fd = br_stream_open();
+  s.fd = br_stream_open(family == ADDRESS_FAMILY_IPV6 ? 1 : 0);
   if (s.fd < 0) {
     Drop(this);
     return ERR_FAILED;
@@ -208,11 +219,11 @@ int TCPSocketPosix::Bind(const IPEndPoint& address) {
   Stream* s = Find(this);
   if (s == nullptr || s->fd < 0)
     return ERR_SOCKET_NOT_CONNECTED;
-  unsigned char addr[4];
+  BrAddr addr;
   int port = 0;
-  if (!ToBridge(address, addr, &port))
+  if (!ToBridge(address, &addr, &port))
     return ERR_ADDRESS_INVALID;
-  return br_stream_bind(s->fd, addr, port) < 0 ? ERR_FAILED : OK;
+  return br_stream_bind(s->fd, &addr, port) < 0 ? ERR_FAILED : OK;
 }
 
 int TCPSocketPosix::Connect(const IPEndPoint& address,
@@ -221,13 +232,13 @@ int TCPSocketPosix::Connect(const IPEndPoint& address,
   if (s == nullptr || s->fd < 0)
     return ERR_SOCKET_NOT_CONNECTED;
 
-  unsigned char addr[4];
+  BrAddr addr;
   int port = 0;
-  if (!ToBridge(address, addr, &port))
+  if (!ToBridge(address, &addr, &port))
     return ERR_ADDRESS_INVALID;
 
   s->peer = address;
-  const int rv = br_stream_connect(s->fd, addr, port);
+  const int rv = br_stream_connect(s->fd, &addr, port);
   if (rv == 0) {
     s->connected = true;
     return OK;
@@ -350,9 +361,9 @@ int TCPSocketPosix::GetLocalAddress(IPEndPoint* address) const {
   const Stream* s = Find(this);
   if (s == nullptr || s->fd < 0)
     return ERR_SOCKET_NOT_CONNECTED;
-  unsigned char addr[4] = {0, 0, 0, 0};
+  BrAddr addr = BrAddr();
   int port = 0;
-  if (br_stream_local(s->fd, addr, &port) < 0)
+  if (br_stream_local(s->fd, &addr, &port) < 0 || (addr.len != 4 && addr.len != 16))
     return ERR_FAILED;
   *address = FromBridge(addr, port);
   return OK;
@@ -432,6 +443,8 @@ extern "C" void br_net_run_due(void);
 
 extern "C" int br_net_thread_up(void);
 extern "C" void br_tcp_pump_turn(void);
+// The datagram sockets' turn (udp_socket_tessronos.cc).
+extern "C" void br_udp_pump_turn(void);
 
 // Called from the page's thread: once the network thread runs it moves the
 // sockets, and this does nothing.
@@ -542,4 +555,25 @@ extern "C" void br_tcp_pump_turn(void) {
 
     ++i;
   }
+
+  // The datagram sockets (QUIC) in the same turn and the same scope.
+  br_udp_pump_turn();
+}
+
+// The parked sockets, for the network thread to wait on between turns.
+extern "C" int br_tcp_watches(BrWatch* out, int max) {
+  int n = 0;
+  for (const net::Stream& s : net::Streams()) {
+    if (n >= max)
+      break;
+    const int events =
+        (s.reading ? BR_WATCH_READ : 0) |
+        (s.connecting || s.writing ? BR_WATCH_WRITE : 0);
+    if (events == 0 || s.fd < 0)
+      continue;
+    out[n].fd = s.fd;
+    out[n].events = events;
+    n++;
+  }
+  return n;
 }
